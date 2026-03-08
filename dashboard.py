@@ -284,7 +284,8 @@ doctors_needed_sim = max(1, int(np.ceil(simulated_peak / 10)))
 
 st.subheader("🔮 Simulation Results")
 c1, c2, c3 = st.columns(3)
-c1.metric("Predicted Patients", int(round(simulated_peak)))
+c1.metric("Predicted Patients" \
+"", int(round(simulated_peak)))
 c2.metric("Beds Required", beds_needed_sim)
 c3.metric("Doctors Required", doctors_needed_sim)
 
