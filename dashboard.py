@@ -112,8 +112,43 @@ prediction_next_hour = float(model.predict(X_next, verbose=0)[0][0])
 # -----------------------------
 # 24 Hour Forecast (rolling prediction)
 # -----------------------------
-sequence = features[-24:].copy()
+# -----------------------------
+# 24 Hour Forecast
+# -----------------------------
+st.subheader("📊 24 Hour AI Forecast")
+
 predictions = []
+
+if len(features) < 24:
+    st.error("Not enough data to generate forecast. Need at least 24 rows.")
+    st.stop()
+
+sequence = features[-24:].copy()
+
+try:
+    for _ in range(24):
+        X_seq = np.array([sequence], dtype=float)
+
+        pred = float(model.predict(X_seq, verbose=0)[0][0])
+        predictions.append(pred)
+
+        new_row = sequence[-1].copy()
+        new_row[0] = pred
+
+        sequence = np.vstack([sequence[1:], new_row])
+
+except Exception as e:
+    st.error(f"Forecast generation failed: {e}")
+    st.stop()
+
+st.write("Predictions length:", len(predictions))
+
+forecast_df = pd.DataFrame({
+    "hour": range(1, len(predictions) + 1),
+    "forecast": predictions
+})
+
+st.line_chart(forecast_df.set_index("hour"))
 
 # ---------------------------------
 # Get prediction from API
@@ -137,7 +172,16 @@ try:
 except Exception:
     st.warning("API not reachable. Using local model prediction.")
 
-forecast_df = pd.DataFrame({"hour": range(1, 25), "forecast": predictions})
+forecast_df = pd.DataFrame({
+    "hour": range(1, len(predictions) + 1),
+    "forecast": predictions
+})
+st.write("Predictions length:", len(predictions))
+st.write("Features shape:", features.shape if 'features' in locals() else "features not found")
+if len(predictions) == 0:
+    st.error("No predictions were generated. Please check forecast loop.")
+    st.stop()
+
 peak = float(np.max(predictions))
 
 # -----------------------------
@@ -166,14 +210,27 @@ st.line_chart(forecast_df.set_index("hour"))
 # Actual vs Forecast (last 24)
 # -----------------------------
 st.subheader("📈 Actual vs Forecast Comparison")
-actual = df["patients"].tail(24).values.astype(float)
+st.subheader("📈 Actual vs Forecast Comparison")
 
-compare_df = pd.DataFrame({"Actual": actual, "Forecast": np.array(predictions[:24], dtype=float)})
+actual = df["patients"].tail(len(predictions)).values.astype(float)
+forecast_vals = np.array(predictions, dtype=float)
+
+min_len = min(len(actual), len(forecast_vals))
+
+actual = actual[:min_len]
+forecast_vals = forecast_vals[:min_len]
+
+compare_df = pd.DataFrame({
+    "Actual": actual,
+    "Forecast": forecast_vals
+})
+
 st.line_chart(compare_df)
 
 st.subheader("📊 Model Accuracy Metrics")
-mae = mean_absolute_error(actual, predictions[:24])
-rmse = np.sqrt(mean_squared_error(actual, predictions[:24]))
+
+mae = mean_absolute_error(actual, forecast_vals)
+rmse = np.sqrt(mean_squared_error(actual, forecast_vals))
 
 m1, m2 = st.columns(2)
 m1.metric("MAE", round(float(mae), 2))
