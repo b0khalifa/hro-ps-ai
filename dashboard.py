@@ -64,7 +64,7 @@ def load_data(path: str) -> pd.DataFrame:
 
 @st.cache_resource
 def load_ai_model(path: str):
-    return load_model(path)
+    return load_model(path, compile=False)
 
 # ========================================
 # DATA UPLOAD SECTION
@@ -115,26 +115,27 @@ prediction_next_hour = float(model.predict(X_next, verbose=0)[0][0])
 sequence = features[-24:].copy()
 predictions = []
 
-for _ in range(24):
-    X = np.array([sequence])
-    pred = float(model.predict(X, verbose=0)[0][0])
-    predictions.append(pred)
+# ---------------------------------
+# Get prediction from API
+# ---------------------------------
 
-    # roll the sequence forward by 1 step; replace patients with predicted value
-    new_row = sequence[-1].copy()
-    new_row[0] = pred
-    sequence = np.vstack([sequence[1:], new_row])
-    API_URL = "http://127.0.0.1:8000/predict"
+API_URL = "http://127.0.0.1:8000/predict"
 
-payload = {
-    "sequence": last_sequence.tolist()
-}
+try:
+    payload = {
+        "sequence": last_sequence.tolist()
+    }
 
-response = requests.post(API_URL, json=payload)
+    response = requests.post(API_URL, json=payload)
 
-result = response.json()
+    if response.status_code == 200:
+        result = response.json()
+        prediction_next_hour = result["predicted_patients_next_hour"]
+    else:
+        st.warning("API returned an error. Using local model prediction.")
 
-prediction = result["predicted_patients_next_hour"]
+except Exception:
+    st.warning("API not reachable. Using local model prediction.")
 
 forecast_df = pd.DataFrame({"hour": range(1, 25), "forecast": predictions})
 peak = float(np.max(predictions))
