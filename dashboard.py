@@ -645,3 +645,11 @@ hospital_map = pd.DataFrame({
 })
 hospital_map["Available"] = hospital_map["Capacity"] - hospital_map["Occupied"]
 st.dataframe(hospital_map, use_container_width=True)
+from api_client import get_prediction
+from dashboard_sections import (
+    show_historical,
+    show_forecast_chart,
+    show_metrics,
+    show_actual_vs_forecast,
+    show_heatmap
+)
