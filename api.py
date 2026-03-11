@@ -111,3 +111,10 @@ def simulate(data: SimulateRequest):
         "recommended_resources": resources,
         "doctor_shortage": doctor_shortage
     }
+@app.get("/status")
+def system_status():
+    return {
+        "system": "Hospital AI",
+        "model": "LSTM Forecast",
+        "status": "running"
+    }
