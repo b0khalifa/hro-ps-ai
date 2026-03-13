@@ -378,3 +378,37 @@ def show_explainability_panel(last_sequence):
             st.write(f"- **{feature}** decreases predicted patient demand by approximately **{abs(impact):.2f}**.")
         else:
             st.write(f"- **{feature}** has negligible effect on the current prediction.")
+
+def show_hybrid_model_panel(last_sequence):
+    from api_client import get_prediction
+
+    st.markdown("## 🤖 Hybrid Forecast Breakdown")
+
+    result = get_prediction(last_sequence)
+
+    if result is None:
+        st.warning("Hybrid forecast service unavailable.")
+        return
+
+    lstm_pred = float(result.get("lstm_prediction", 0))
+    arimax_pred = float(result.get("arimax_prediction", 0))
+    hybrid_pred = float(result.get("hybrid_prediction", result.get("predicted_patients_next_hour", 0)))
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("LSTM Prediction", int(lstm_pred))
+    c2.metric("ARIMAX Prediction", int(arimax_pred))
+    c3.metric("Hybrid Prediction", int(hybrid_pred))
+
+    compare_df = pd.DataFrame({
+        "Model": ["LSTM", "ARIMAX", "Hybrid"],
+        "Prediction": [lstm_pred, arimax_pred, hybrid_pred]
+    })
+
+    fig = px.bar(
+        compare_df,
+        x="Model",
+        y="Prediction",
+        title="Hybrid Forecast Comparison"
+    )
+    fig.update_layout(height=350)
+    st.plotly_chart(fig, use_container_width=True)

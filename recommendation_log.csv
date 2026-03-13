@@ -1,1 +1,1 @@
-recommendation_id,timestamp,type,message,status,approved_by,execution_status,execution_note
+recommendation_id,timestamp,type,message,status,approved_by,execution_status,execution_note,affected_files

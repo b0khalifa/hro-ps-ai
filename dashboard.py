@@ -29,7 +29,8 @@ from dashboard_sections import (
     show_operations_panel,
     show_hospital_map_panel,
     show_heatmap,
-    show_explainability_panel
+    show_explainability_panel,
+    show_hybrid_model_panel
 )
 
 # =========================
@@ -345,9 +346,10 @@ st.markdown("---")
 # ROLE-BASED TABS
 # =========================
 if role == "admin":
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs([
     "📊 Overview",
     "📈 Forecast",
+    "🤖 Hybrid Model",
     "🧠 Simulation",
     "⚙️ Operations",
     "🏥 Departments",

@@ -2,14 +2,16 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List
 import numpy as np
+import joblib
 from tensorflow.keras.models import load_model
 
 app = FastAPI(title="Hospital AI API")
 
 # ========================================
-# LOAD MODEL
+# LOAD MODELS
 # ========================================
-model = load_model("hospital_forecast_model.keras", compile=False)
+lstm_model = load_model("hospital_forecast_model.keras", compile=False)
+arimax_model = joblib.load("arimax_model.pkl")
 
 FEATURE_NAMES = [
     "patients",
@@ -19,6 +21,9 @@ FEATURE_NAMES = [
     "holiday",
     "weather"
 ]
+
+HYBRID_LSTM_WEIGHT = 0.6
+HYBRID_ARIMAX_WEIGHT = 0.4
 
 
 # ========================================
@@ -40,7 +45,7 @@ class ExplainRequest(BaseModel):
 
 
 # ========================================
-# HELPER FUNCTIONS
+# HELPERS
 # ========================================
 def optimize_resources(predicted_patients: float):
     beds_needed = int(predicted_patients * 1.1)
@@ -85,12 +90,61 @@ def validate_sequence_shape(arr: np.ndarray):
     return arr.shape == (24, 6)
 
 
+def get_next_exog_from_sequence(sequence_array: np.ndarray):
+    """
+    ARIMAX uses exogenous variables only:
+    day_of_week, month, is_weekend, holiday, weather
+
+    Since current system has no hour feature, we approximate next-hour exog
+    using the last row exogenous values.
+    """
+    last_row = sequence_array[-1]
+
+    # columns:
+    # 0 patients
+    # 1 day_of_week
+    # 2 month
+    # 3 is_weekend
+    # 4 holiday
+    # 5 weather
+    exog = np.array([[last_row[1], last_row[2], last_row[3], last_row[4], last_row[5]]], dtype=float)
+    return exog
+
+
+def predict_lstm(sequence_array: np.ndarray):
+    X = np.array([sequence_array], dtype=float)
+    pred = float(lstm_model.predict(X, verbose=0)[0][0])
+    return pred
+
+
+def predict_arimax(sequence_array: np.ndarray):
+    next_exog = get_next_exog_from_sequence(sequence_array)
+
+    # one-step forecast
+    forecast = arimax_model.forecast(steps=1, exog=next_exog)
+    return float(forecast.iloc[0] if hasattr(forecast, "iloc") else forecast[0])
+
+
+def predict_hybrid(sequence_array: np.ndarray):
+    lstm_pred = predict_lstm(sequence_array)
+    arimax_pred = predict_arimax(sequence_array)
+
+    hybrid_pred = (HYBRID_LSTM_WEIGHT * lstm_pred) + (HYBRID_ARIMAX_WEIGHT * arimax_pred)
+
+    return {
+        "lstm_prediction": lstm_pred,
+        "arimax_prediction": arimax_pred,
+        "hybrid_prediction": hybrid_pred
+    }
+
+
 def explain_feature_importance(sequence_array: np.ndarray):
     """
-    Local sensitivity-based explanation.
-    Perturb each feature in the LAST timestep only and measure prediction change.
+    Local sensitivity explanation based on HYBRID prediction.
+    Perturb each feature in the last timestep and observe hybrid prediction change.
     """
-    base_pred = float(model.predict(np.array([sequence_array]), verbose=0)[0][0])
+    base_result = predict_hybrid(sequence_array)
+    base_pred = float(base_result["hybrid_prediction"])
 
     impacts = []
 
@@ -104,7 +158,8 @@ def explain_feature_importance(sequence_array: np.ndarray):
         else:
             modified[-1, i] = 1 - modified[-1, i]
 
-        new_pred = float(model.predict(np.array([modified]), verbose=0)[0][0])
+        new_result = predict_hybrid(modified)
+        new_pred = float(new_result["hybrid_prediction"])
         impact = new_pred - base_pred
 
         impacts.append({
@@ -132,7 +187,7 @@ def home():
 def system_status():
     return {
         "system": "Hospital AI",
-        "model": "LSTM Forecast",
+        "model": "Hybrid Forecast (LSTM + ARIMAX)",
         "status": "running"
     }
 
@@ -144,14 +199,17 @@ def predict(data: PredictRequest):
     if not validate_sequence_shape(arr):
         return {"error": "Input must be shape (24, 6)"}
 
-    X = np.array([arr])
-    pred = float(model.predict(X, verbose=0)[0][0])
+    pred_result = predict_hybrid(arr)
+    hybrid_pred = float(pred_result["hybrid_prediction"])
 
-    resources = optimize_resources(pred)
-    emergency = predict_emergency_load(pred)
+    resources = optimize_resources(hybrid_pred)
+    emergency = predict_emergency_load(hybrid_pred)
 
     return {
-        "predicted_patients_next_hour": pred,
+        "predicted_patients_next_hour": hybrid_pred,
+        "lstm_prediction": pred_result["lstm_prediction"],
+        "arimax_prediction": pred_result["arimax_prediction"],
+        "hybrid_prediction": hybrid_pred,
         "emergency_level": emergency,
         "recommended_resources": resources
     }
