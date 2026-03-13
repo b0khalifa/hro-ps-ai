@@ -271,14 +271,11 @@ with qc2:
     )
 
 with qc3:
-    show_advanced_view = st.checkbox(
-        "Show Advanced Insights",
-        value=True,
-        key="show_advanced_view"
-    )
+    
+    show_advanced_view = st.checkbox("Show Advanced Insights", value=True)
+
     if st.button("🔄 Refresh Dashboard"):
         st.experimental_rerun()
-    
     
 
 st.info(
