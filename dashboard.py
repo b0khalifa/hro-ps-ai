@@ -95,6 +95,22 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================
+# System Status Badges
+# =========================
+badge1, badge2, badge3, badge4 = st.columns(4)
+
+badge1.success("🟢 API Online")
+badge2.info("📡 Forecast Model Active")
+badge3.warning("🏥 Hospital Monitoring Enabled")
+
+if emergency_level == "HIGH":
+    badge4.error("🚨 Emergency Mode")
+elif emergency_level == "MEDIUM":
+    badge4.warning("⚠️ Elevated Pressure")
+else:
+    badge4.success("✅ Normal Operations")
+
+# =========================
 # LOAD DATA
 # =========================
 df = pd.read_csv("clean_data.csv")
@@ -211,6 +227,29 @@ else:
     st.success("✅ System Stable: No major emergency pressure detected.")
 
 # =========================
+# System Health Overview
+# =========================
+st.markdown("## 🧠 System Health Overview")
+
+h1, h2, h3, h4 = st.columns(4)
+
+h1.metric("Patients Now", int(df["patients"].iloc[-1]))
+h2.metric("Predicted Next Hour", int(prediction))
+h3.metric("Peak Forecast", int(peak))
+h4.metric("Beds Required", int(beds_needed))
+
+# =========================
+# Capacity Summary
+# =========================
+st.markdown("### Hospital Resource Snapshot")
+
+c1, c2, c3 = st.columns(3)
+
+c1.metric("Beds Needed", beds_needed)
+c2.metric("Doctors Needed", doctors_needed)
+c3.metric("Nurses Needed", nurses_needed)
+
+# =========================
 # QUICK CONTROLS
 # =========================
 st.markdown("## 🎛 Quick Controls")
@@ -231,12 +270,12 @@ with qc2:
         key="selected_time_window"
     )
 
-with qc3:
-    show_advanced_view = st.checkbox(
-        "Show Advanced Insights",
-        value=True,
-        key="show_advanced_view"
-    )
+
+    with qc3:
+    show_advanced_view = st.checkbox("Show Advanced Insights", value=True)
+
+    if st.button("🔄 Refresh Dashboard"):
+        st.experimental_rerun()
 
 st.info(
     f"Current Focus: **{selected_department}** | "
