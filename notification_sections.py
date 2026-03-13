@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import os
 
-
 LOG_FILE = "recommendation_log.csv"
 
 
@@ -15,10 +14,31 @@ def load_decisions():
             "type",
             "message",
             "status",
-            "approved_by"
+            "approved_by",
+            "execution_status",
+            "execution_note",
+            "affected_files"
         ])
 
-    return pd.read_csv(LOG_FILE)
+    df = pd.read_csv(LOG_FILE)
+
+    expected_cols = [
+        "recommendation_id",
+        "timestamp",
+        "type",
+        "message",
+        "status",
+        "approved_by",
+        "execution_status",
+        "execution_note",
+        "affected_files"
+    ]
+
+    for col in expected_cols:
+        if col not in df.columns:
+            df[col] = ""
+
+    return df[expected_cols]
 
 
 def show_staff_decision_feed(role, department=None):
@@ -62,6 +82,7 @@ def show_staff_decision_feed(role, department=None):
 
         if isinstance(execution_note, str) and execution_note.strip():
             st.caption(f"Execution Note: {execution_note}")
+
         st.markdown("---")
 
 

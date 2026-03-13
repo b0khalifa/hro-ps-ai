@@ -91,22 +91,7 @@ def validate_sequence_shape(arr: np.ndarray):
 
 
 def get_next_exog_from_sequence(sequence_array: np.ndarray):
-    """
-    ARIMAX uses exogenous variables only:
-    day_of_week, month, is_weekend, holiday, weather
-
-    Since current system has no hour feature, we approximate next-hour exog
-    using the last row exogenous values.
-    """
     last_row = sequence_array[-1]
-
-    # columns:
-    # 0 patients
-    # 1 day_of_week
-    # 2 month
-    # 3 is_weekend
-    # 4 holiday
-    # 5 weather
     exog = np.array([[last_row[1], last_row[2], last_row[3], last_row[4], last_row[5]]], dtype=float)
     return exog
 
@@ -119,8 +104,6 @@ def predict_lstm(sequence_array: np.ndarray):
 
 def predict_arimax(sequence_array: np.ndarray):
     next_exog = get_next_exog_from_sequence(sequence_array)
-
-    # one-step forecast
     forecast = arimax_model.forecast(steps=1, exog=next_exog)
     return float(forecast.iloc[0] if hasattr(forecast, "iloc") else forecast[0])
 
@@ -139,10 +122,6 @@ def predict_hybrid(sequence_array: np.ndarray):
 
 
 def explain_feature_importance(sequence_array: np.ndarray):
-    """
-    Local sensitivity explanation based on HYBRID prediction.
-    Perturb each feature in the last timestep and observe hybrid prediction change.
-    """
     base_result = predict_hybrid(sequence_array)
     base_pred = float(base_result["hybrid_prediction"])
 

@@ -99,10 +99,7 @@ def show_forecast_panel(df, last_sequence):
         "Forecast": forecast_vals
     })
 
-    fig_compare = px.line(
-        compare_df,
-        title="Actual vs Forecast"
-    )
+    fig_compare = px.line(compare_df, title="Actual vs Forecast")
     fig_compare.update_layout(
         height=350,
         xaxis_title="Time Window",
@@ -331,8 +328,8 @@ def show_heatmap(df):
     )
 
     st.plotly_chart(fig, use_container_width=True)
-
     st.caption("Green = Stable load • Yellow = Warning level • Red = High pressure")
+
 
 def show_explainability_panel(last_sequence):
     st.markdown("## 🔬 Explainable AI Panel")
@@ -379,9 +376,8 @@ def show_explainability_panel(last_sequence):
         else:
             st.write(f"- **{feature}** has negligible effect on the current prediction.")
 
-def show_hybrid_model_panel(last_sequence):
-    from api_client import get_prediction
 
+def show_hybrid_model_panel(last_sequence):
     st.markdown("## 🤖 Hybrid Forecast Breakdown")
 
     result = get_prediction(last_sequence)

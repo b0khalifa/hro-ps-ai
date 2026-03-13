@@ -72,7 +72,6 @@ def show_audit_table():
         return
 
     df = df.sort_values(by="timestamp", ascending=False)
-
     st.dataframe(df, use_container_width=True, hide_index=True)
 
 

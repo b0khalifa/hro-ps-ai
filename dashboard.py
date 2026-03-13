@@ -1,24 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from staff_sections import (
-    show_my_shifts,
-    show_all_shifts,
-    show_or_bookings,
-    show_appointments,
-    show_admin_appointments_overview
-)
-from notification_sections import (
-    show_staff_decision_feed,
-    show_admin_decision_history,
-    show_department_notice_board
-)
-from audit_sections import (
-    show_audit_summary,
-    show_audit_table,
-    show_execution_trace
-)
-from approval_sections import show_admin_approval_panel
+
 from auth import login_form, require_login, logout_button
 from api_client import get_prediction, get_system_status
 from dashboard_sections import (
@@ -31,6 +14,24 @@ from dashboard_sections import (
     show_heatmap,
     show_explainability_panel,
     show_hybrid_model_panel
+)
+from staff_sections import (
+    show_my_shifts,
+    show_all_shifts,
+    show_or_bookings,
+    show_appointments,
+    show_admin_appointments_overview
+)
+from approval_sections import show_admin_approval_panel
+from notification_sections import (
+    show_staff_decision_feed,
+    show_admin_decision_history,
+    show_department_notice_board
+)
+from audit_sections import (
+    show_audit_summary,
+    show_audit_table,
+    show_execution_trace
 )
 
 # =========================
@@ -109,7 +110,8 @@ st.markdown("""
 <div class="custom-header">
     <h1>🏥 Hospital AI Command Center</h1>
     <p style="margin:0; font-size:1rem;">
-        AI-powered forecasting, hospital capacity monitoring, digital twin simulation, and operational planning.
+        AI-powered forecasting, hospital capacity monitoring, digital twin simulation,
+        operational planning, approvals, execution, and staff communication.
     </p>
 </div>
 """, unsafe_allow_html=True)
@@ -125,6 +127,7 @@ user = st.session_state["user"]
 role = user["role"]
 name = user["name"]
 department = user["department"]
+username = user["username"]
 
 st.info(f"Logged in as **{name}** | Role: **{role}** | Department: **{department}**")
 
@@ -328,7 +331,6 @@ with qc3:
         value=True,
         key="show_advanced_view"
     )
-
     if st.button("🔄 Refresh Dashboard"):
         st.rerun()
 
@@ -347,20 +349,20 @@ st.markdown("---")
 # =========================
 if role == "admin":
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs([
-    "📊 Overview",
-    "📈 Forecast",
-    "🤖 Hybrid Model",
-    "🧠 Simulation",
-    "⚙️ Operations",
-    "🏥 Departments",
-    "🔬 Explainability",
-    "🕒 Shifts",
-    "🏥 OR Bookings",
-    "📅 Appointments",
-    "✅ Approvals",
-    "📢 Decision Feed",
-    "🧾 Audit"
-])
+        "📊 Overview",
+        "📈 Forecast",
+        "🤖 Hybrid Model",
+        "🧠 Simulation",
+        "⚙️ Operations",
+        "🏥 Departments",
+        "🔬 Explainability",
+        "🕒 Shifts",
+        "🏥 OR Bookings",
+        "📅 Appointments",
+        "✅ Approvals",
+        "📢 Decision Feed",
+        "🧾 Audit"
+    ])
 
     with tab1:
         st.subheader("System Overview")
@@ -368,42 +370,46 @@ if role == "admin":
 
     with tab2:
         st.subheader("Forecast & Demand Monitoring for Hospital Planning")
-        forecast_df, forecast_values = show_forecast_panel(df, last_sequence)
-
+        show_forecast_panel(df, last_sequence)
         if show_advanced_view:
             st.markdown("---")
             show_heatmap(df)
 
     with tab3:
+        st.subheader("Hybrid Forecast Model (LSTM + ARIMAX)")
+        show_hybrid_model_panel(last_sequence)
+
+    with tab4:
         st.subheader("Digital Twin & Scenario Planning for Capacity Decisions")
         show_digital_twin_panel(prediction)
 
-    with tab4:
+    with tab5:
         st.subheader("Hospital Operations Center (Scheduling & Resources)")
         show_operations_panel(prediction)
 
-    with tab5:
+    with tab6:
         st.subheader("Department Capacity & Status")
         show_hospital_map_panel(prediction)
-
         if selected_department != "All Departments":
             st.info(f"Focused department view selected: {selected_department}")
 
-    with tab6:
+    with tab7:
         st.subheader("AI Explainability for Doctors")
         show_explainability_panel(last_sequence)
-    with tab7:
+
+    with tab8:
         st.subheader("Shift Management")
         show_all_shifts()
 
-    with tab8:
+    with tab9:
         st.subheader("Operating Room Booking Management")
         show_or_bookings(role="admin")
 
-    with tab9:
+    with tab10:
         st.subheader("Appointments Overview")
         show_admin_appointments_overview()
-    with tab10:
+
+    with tab11:
         st.subheader("Manager Approval Workflow")
         show_admin_approval_panel(
             peak=peak,
@@ -412,12 +418,14 @@ if role == "admin":
             emergency_level=emergency_level,
             approver_name=name
         )
-    with tab11:
+
+    with tab12:
         st.subheader("Approved Decisions & History")
         show_staff_decision_feed(role=role, department=department)
         st.markdown("---")
         show_admin_decision_history()
-    with tab12:
+
+    with tab13:
         st.subheader("Decision Audit & Execution Trace")
         show_audit_summary()
         st.markdown("---")
@@ -427,13 +435,13 @@ if role == "admin":
 
 elif role == "doctor":
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "📊 Overview",
-    "📈 Forecast",
-    "🏥 My Department",
-    "🕒 My Shifts",
-    "🏥 OR / Appointments",
-    "📢 Notifications"
-])
+        "📊 Overview",
+        "📈 Forecast",
+        "🏥 My Department",
+        "🕒 My Shifts",
+        "🏥 OR / Appointments",
+        "📢 Notifications"
+    ])
 
     with tab1:
         st.subheader("Doctor Overview")
@@ -448,20 +456,22 @@ elif role == "doctor":
 
     with tab2:
         st.subheader("Forecast & Demand Monitoring")
-        forecast_df, forecast_values = show_forecast_panel(df, last_sequence)
+        show_forecast_panel(df, last_sequence)
 
     with tab3:
         st.subheader(f"My Department: {department}")
         show_hospital_map_panel(prediction)
+
     with tab4:
         st.subheader("My Assigned Shifts")
-        show_my_shifts(username=user["username"], role=role)
+        show_my_shifts(username=username, role=role)
 
     with tab5:
         st.subheader("My OR Bookings and Appointments")
         show_or_bookings(role="doctor", doctor_name=name)
         st.markdown("---")
         show_appointments(role="doctor", doctor_name=name)
+
     with tab6:
         st.subheader("Doctor Notification Feed")
         show_staff_decision_feed(role=role, department=department)
@@ -470,12 +480,12 @@ elif role == "doctor":
 
 elif role == "nurse":
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📊 Overview",
-    "🏥 My Department",
-    "🕒 My Shifts",
-    "📅 Appointments",
-    "📢 Notifications"
-])
+        "📊 Overview",
+        "🏥 My Department",
+        "🕒 My Shifts",
+        "📅 Appointments",
+        "📢 Notifications"
+    ])
 
     with tab1:
         st.subheader("Nursing Overview")
@@ -491,13 +501,15 @@ elif role == "nurse":
     with tab2:
         st.subheader(f"My Department: {department}")
         show_hospital_map_panel(prediction)
+
     with tab3:
         st.subheader("My Assigned Shifts")
-        show_my_shifts(username=user["username"], role=role)
+        show_my_shifts(username=username, role=role)
 
     with tab4:
         st.subheader("Department Appointments")
         show_appointments(role="nurse", department=department)
+
     with tab5:
         st.subheader("Nursing Notification Feed")
         show_staff_decision_feed(role=role, department=department)

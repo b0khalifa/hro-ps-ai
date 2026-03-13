@@ -3,7 +3,6 @@ import pandas as pd
 from datetime import datetime, timedelta
 import os
 
-
 LOG_FILE = "recommendation_log.csv"
 SHIFTS_FILE = "shifts.csv"
 OR_FILE = "or_bookings.csv"
@@ -37,16 +36,16 @@ def ensure_log_schema(df):
 def load_recommendations():
     if not os.path.exists(LOG_FILE):
         df = pd.DataFrame(columns=[
-    "recommendation_id",
-    "timestamp",
-    "type",
-    "message",
-    "status",
-    "approved_by",
-    "execution_status",
-    "execution_note",
-    "affected_files"
-])
+            "recommendation_id",
+            "timestamp",
+            "type",
+            "message",
+            "status",
+            "approved_by",
+            "execution_status",
+            "execution_note",
+            "affected_files"
+        ])
         df.to_csv(LOG_FILE, index=False)
         return df
 
@@ -90,7 +89,7 @@ def infer_department_from_message(message: str):
 
 
 # ========================================
-# AI RECOMMENDATION GENERATION
+# RECOMMENDATION GENERATION
 # ========================================
 def generate_ai_recommendations(peak, beds_needed, doctors_needed, emergency_level):
     recommendations = []
@@ -209,6 +208,7 @@ def execute_capacity_decision(message):
 
     return "executed", "Marked top pressure appointment slots as Reschedule Suggested.", APPOINTMENTS_FILE
 
+
 def execute_emergency_decision(message):
     or_cols = ["booking_id", "room", "doctor", "department", "date", "time_slot", "procedure", "status"]
     appointments_cols = ["appointment_id", "department", "doctor", "date", "time_slot", "patient_count", "status"]
@@ -241,6 +241,7 @@ def execute_emergency_decision(message):
 
     return "executed", " | ".join(note_parts), ", ".join(affected_files)
 
+
 def execute_decision(decision_type, message):
     if decision_type == "staff":
         return execute_staff_decision(message)
@@ -256,6 +257,7 @@ def execute_decision(decision_type, message):
 
     return "skipped", "No execution rule defined for this recommendation type.", ""
 
+
 # ========================================
 # APPROVE / REJECT
 # ========================================
@@ -266,15 +268,15 @@ def approve_recommendation(recommendation_id, approver_name):
     row = df[row_mask].iloc[0]
 
     execution_status, execution_note, affected_files = execute_decision(
-    decision_type=row["type"],
-    message=row["message"]
-)
-    
-    df.loc[row_mask, "affected_files"] = affected_files
+        decision_type=row["type"],
+        message=row["message"]
+    )
+
     df.loc[row_mask, "status"] = "approved"
     df.loc[row_mask, "approved_by"] = approver_name
     df.loc[row_mask, "execution_status"] = execution_status
     df.loc[row_mask, "execution_note"] = execution_note
+    df.loc[row_mask, "affected_files"] = affected_files
 
     save_recommendations(df)
 
