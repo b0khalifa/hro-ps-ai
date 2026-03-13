@@ -312,7 +312,7 @@ with tab1:
 # TAB 2: FORECAST
 # -------------------------
 with tab2:
-    st.subheader("Forecast & Demand Monitoring")
+    st.subheader("Forecast & Demand Monitoring for Hospital Planning")
     forecast_df, forecast_values = show_forecast_panel(df, last_sequence)
 
     if show_advanced_view:
@@ -323,14 +323,14 @@ with tab2:
 # TAB 3: SIMULATION
 # -------------------------
 with tab3:
-    st.subheader("Digital Twin & Scenario Planning")
+    st.subheader("Digital Twin & Scenario Planning for Capacity Decisions")
     show_digital_twin_panel(prediction)
 
 # -------------------------
 # TAB 4: OPERATIONS
 # -------------------------
 with tab4:
-    st.subheader("Hospital Operations Center")
+    st.subheader("Hospital Operations Center (Scheduling & Resources)")
     show_operations_panel(prediction)
 
 # -------------------------

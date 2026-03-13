@@ -85,7 +85,7 @@ def show_forecast_panel(df, last_sequence):
         )
         st.plotly_chart(fig_forecast, use_container_width=True)
 
-    st.write("### Actual vs Forecast Comparison")
+    st.write("### Actual vs Forecast Comparison (Recent Window)")
 
     actual = df["patients"].tail(len(predictions)).values.astype(float)
     forecast_vals = np.array(predictions, dtype=float)
@@ -156,7 +156,7 @@ def show_capacity_panel(resources, emergency_level):
         mini3.metric("Nurses", int(nurses_needed))
 
     with col2:
-        st.write("### Alert Center")
+        st.write("### Capacity Alert Center")
 
         if emergency_level == "HIGH":
             st.error("High emergency load detected")
@@ -193,7 +193,7 @@ def show_digital_twin_panel(prediction):
     sim = simulate(prediction, beds, doctors, demand)
 
     if sim:
-        st.write("### Simulation Results")
+        st.write("### Scenario Simulation Results")
 
         s1, s2, s3 = st.columns(3)
         s1.metric("Simulated Patients", int(sim["simulated_patients"]))
