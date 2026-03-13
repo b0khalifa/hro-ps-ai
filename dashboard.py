@@ -13,19 +13,13 @@ from dashboard_sections import (
     show_heatmap
 )
 
+# =========================
+# PAGE CONFIG
+# =========================
 st.set_page_config(page_title="Hospital AI Command Center", layout="wide")
 
-st.markdown("""
-<div class="custom-header">
-    <h1>🏥 Hospital AI Command Center</h1>
-    <p style="margin:0; font-size:1rem;">
-        AI-powered forecasting, hospital capacity monitoring, digital twin simulation, and operational planning.
-    </p>
-</div>
-""", unsafe_allow_html=True)
-
 # =========================
-# Custom Styling
+# CUSTOM STYLING
 # =========================
 st.markdown("""
     <style>
@@ -89,7 +83,19 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================
-# Load data
+# HEADER
+# =========================
+st.markdown("""
+<div class="custom-header">
+    <h1>🏥 Hospital AI Command Center</h1>
+    <p style="margin:0; font-size:1rem;">
+        AI-powered forecasting, hospital capacity monitoring, digital twin simulation, and operational planning.
+    </p>
+</div>
+""", unsafe_allow_html=True)
+
+# =========================
+# LOAD DATA
 # =========================
 df = pd.read_csv("clean_data.csv")
 
@@ -109,7 +115,7 @@ if len(features) < 24:
 last_sequence = features[-24:]
 
 # =========================
-# API prediction
+# API PREDICTION
 # =========================
 result = get_prediction(last_sequence)
 
@@ -126,7 +132,7 @@ doctors_needed = recommended["doctors_needed"]
 nurses_needed = recommended.get("nurses_needed", 0)
 
 # =========================
-# Rolling forecast to estimate peak
+# ROLLING FORECAST FOR PEAK
 # =========================
 predictions = []
 sequence = last_sequence.copy()
@@ -151,7 +157,7 @@ if len(predictions) == 0:
 peak = float(np.max(predictions))
 
 # =========================
-# Sidebar
+# SIDEBAR
 # =========================
 with st.sidebar:
     st.header("🧭 Command Sidebar")
@@ -183,7 +189,7 @@ with st.sidebar:
         st.success("Low")
 
 # =========================
-# Top KPIs
+# TOP KPI ROW
 # =========================
 show_top_kpis(
     current_patients=int(df["patients"].iloc[-1]),
@@ -194,10 +200,56 @@ show_top_kpis(
     doctors=doctors_needed
 )
 
+# =========================
+# ALERT BANNER
+# =========================
+if emergency_level == "HIGH":
+    st.error("🚨 Critical Alert: High emergency load expected. Immediate capacity review recommended.")
+elif emergency_level == "MEDIUM":
+    st.warning("⚠️ Warning: Moderate emergency pressure detected. Monitor staffing and bed usage closely.")
+else:
+    st.success("✅ System Stable: No major emergency pressure detected.")
+
+# =========================
+# QUICK CONTROLS
+# =========================
+st.markdown("## 🎛 Quick Controls")
+
+qc1, qc2, qc3 = st.columns(3)
+
+with qc1:
+    selected_department = st.selectbox(
+        "Department Focus",
+        ["All Departments", "ER", "ICU", "General Ward", "Surgery", "Radiology"],
+        key="selected_department"
+    )
+
+with qc2:
+    selected_time_window = st.selectbox(
+        "Forecast View",
+        ["Next 24 Hours", "Current Snapshot"],
+        key="selected_time_window"
+    )
+
+with qc3:
+    show_advanced_view = st.checkbox(
+        "Show Advanced Insights",
+        value=True,
+        key="show_advanced_view"
+    )
+
+st.info(
+    f"Current Focus: **{selected_department}** | "
+    f"View Mode: **{selected_time_window}** | "
+    f"Advanced Insights: **{'On' if show_advanced_view else 'Off'}**"
+)
+
+display_peak = peak if selected_time_window == "Next 24 Hours" else prediction
+
 st.markdown("---")
 
 # =========================
-# Tabs Layout
+# TABS
 # =========================
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📊 Overview",
@@ -212,7 +264,6 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 # -------------------------
 with tab1:
     st.subheader("System Overview")
-
     show_capacity_panel(recommended, emergency_level)
 
 # -------------------------
@@ -220,18 +271,17 @@ with tab1:
 # -------------------------
 with tab2:
     st.subheader("Forecast & Demand Monitoring")
-
     forecast_df, forecast_values = show_forecast_panel(df, last_sequence)
 
-    st.markdown("---")
-    show_heatmap(df)
+    if show_advanced_view:
+        st.markdown("---")
+        show_heatmap(df)
 
 # -------------------------
 # TAB 3: SIMULATION
 # -------------------------
 with tab3:
     st.subheader("Digital Twin & Scenario Planning")
-
     show_digital_twin_panel(prediction)
 
 # -------------------------
@@ -239,7 +289,6 @@ with tab3:
 # -------------------------
 with tab4:
     st.subheader("Hospital Operations Center")
-
     show_operations_panel(prediction)
 
 # -------------------------
@@ -247,11 +296,14 @@ with tab4:
 # -------------------------
 with tab5:
     st.subheader("Department Capacity & Status")
-
     show_hospital_map_panel(prediction)
 
-    
+    if selected_department != "All Departments":
+        st.info(f"Focused department view selected: {selected_department}")
 
+# =========================
+# FOOTER
+# =========================
 st.markdown("""
 <div class="custom-footer">
     Hospital Resource Optimization with AI • Graduation Project Dashboard
