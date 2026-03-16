@@ -4,7 +4,9 @@ import numpy as np
 
 from auth import login_form, require_login, logout_button
 from api_client import get_prediction, get_system_status
+
 from dashboard_sections import (
+    show_forecast_evaluation_panel,
     show_top_kpis,
     show_forecast_panel,
     show_capacity_panel,
@@ -13,36 +15,46 @@ from dashboard_sections import (
     show_hospital_map_panel,
     show_heatmap,
     show_explainability_panel,
-    show_hybrid_model_panel
+    show_hybrid_model_panel,
 )
+
 from staff_sections import (
     show_my_shifts,
     show_all_shifts,
     show_or_bookings,
     show_appointments,
-    show_admin_appointments_overview
+    show_admin_appointments_overview,
 )
+
 from approval_sections import show_admin_approval_panel
+
 from notification_sections import (
     show_staff_decision_feed,
     show_admin_decision_history,
-    show_department_notice_board
+    show_department_notice_board,
 )
+
 from audit_sections import (
     show_audit_summary,
     show_audit_table,
-    show_execution_trace
+    show_execution_trace,
 )
+
 
 # =========================
 # PAGE CONFIG
 # =========================
-st.set_page_config(page_title="Hospital AI Command Center", layout="wide")
+st.set_page_config(
+    page_title="Hospital AI Command Center",
+    layout="wide"
+)
+
 
 # =========================
 # CUSTOM STYLING
 # =========================
-st.markdown("""
+st.markdown(
+    """
     <style>
     .main {
         padding-top: 1rem;
@@ -88,7 +100,11 @@ st.markdown("""
     .custom-header {
         padding: 1rem 1.2rem;
         border-radius: 14px;
-        background: linear-gradient(90deg, rgba(0,120,255,0.10), rgba(0,180,120,0.10));
+        background: linear-gradient(
+            90deg,
+            rgba(0,120,255,0.10),
+            rgba(0,180,120,0.10)
+        );
         margin-bottom: 1rem;
     }
 
@@ -101,20 +117,27 @@ st.markdown("""
         border-top: 1px solid rgba(128,128,128,0.2);
     }
     </style>
-""", unsafe_allow_html=True)
+    """,
+    unsafe_allow_html=True
+)
+
 
 # =========================
 # HEADER
 # =========================
-st.markdown("""
-<div class="custom-header">
-    <h1>🏥 Hospital AI Command Center</h1>
-    <p style="margin:0; font-size:1rem;">
-        AI-powered forecasting, hospital capacity monitoring, digital twin simulation,
-        operational planning, approvals, execution, and staff communication.
-    </p>
-</div>
-""", unsafe_allow_html=True)
+st.markdown(
+    """
+    <div class="custom-header">
+        <h1>🏥 Hospital AI Command Center</h1>
+        <p style="margin:0; font-size:1rem;">
+            AI-powered forecasting, hospital capacity monitoring, digital twin simulation,
+            operational planning, approvals, execution, and staff communication.
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
 
 # =========================
 # AUTHENTICATION
@@ -129,33 +152,45 @@ name = user["name"]
 department = user["department"]
 username = user["username"]
 
-st.info(f"Logged in as **{name}** | Role: **{role}** | Department: **{department}**")
+st.info(
+    f"Logged in as **{name}** | Role: **{role}** | Department: **{department}**"
+)
+
 
 # =========================
 # LOAD DATA
 # =========================
 df = pd.read_csv("clean_data.csv")
 
-required_cols = ["patients", "day_of_week", "month", "is_weekend", "holiday", "weather"]
-missing = [c for c in required_cols if c not in df.columns]
+required_cols = [
+    "patients",
+    "day_of_week",
+    "month",
+    "is_weekend",
+    "holiday",
+    "weather",
+]
 
-if missing:
-    st.error(f"Missing required columns: {missing}")
+missing_cols = [col for col in required_cols if col not in df.columns]
+if missing_cols:
+    st.error(f"Missing required columns: {missing_cols}")
     st.stop()
 
 features = df[required_cols].values.astype(float)
 
 if len(features) < 24:
-    st.error("Need at least 24 rows of data")
+    st.error("Need at least 24 rows of data.")
     st.stop()
 
 last_sequence = features[-24:]
+
 
 # =========================
 # API STATUS
 # =========================
 status_result = get_system_status()
 api_online = status_result is not None and status_result.get("status") == "running"
+
 
 # =========================
 # API PREDICTION
@@ -174,6 +209,7 @@ beds_needed = int(recommended["beds_needed"])
 doctors_needed = int(recommended["doctors_needed"])
 nurses_needed = int(recommended.get("nurses_needed", 0))
 
+
 # =========================
 # ROLLING FORECAST FOR PEAK
 # =========================
@@ -182,7 +218,6 @@ sequence = last_sequence.copy()
 
 for _ in range(24):
     res = get_prediction(sequence)
-
     if res is None:
         break
 
@@ -194,10 +229,11 @@ for _ in range(24):
     sequence = np.vstack([sequence[1:], new_row])
 
 if len(predictions) == 0:
-    st.error("Forecast failed")
+    st.error("Forecast failed.")
     st.stop()
 
 peak = float(np.max(predictions))
+
 
 # =========================
 # SIDEBAR
@@ -217,6 +253,7 @@ with st.sidebar:
         st.success("API Connected")
     else:
         st.error("API Offline")
+
     st.info("Dashboard Active")
 
     st.markdown("### Dataset Info")
@@ -241,6 +278,7 @@ with st.sidebar:
     else:
         st.success("Low")
 
+
 # =========================
 # STATUS BADGES
 # =========================
@@ -261,6 +299,7 @@ elif emergency_level == "MEDIUM":
 else:
     badge4.success("✅ Normal Operations")
 
+
 # =========================
 # TOP KPI ROW
 # =========================
@@ -273,6 +312,7 @@ show_top_kpis(
     doctors=doctors_needed
 )
 
+
 # =========================
 # ALERT BANNER
 # =========================
@@ -282,6 +322,7 @@ elif emergency_level == "MEDIUM":
     st.warning("⚠️ Warning: Moderate emergency pressure detected. Monitor staffing and bed usage closely.")
 else:
     st.success("✅ System Stable: No major emergency pressure detected.")
+
 
 # =========================
 # SYSTEM HEALTH OVERVIEW
@@ -294,6 +335,7 @@ h2.metric("Predicted Next Hour", int(prediction))
 h3.metric("Peak Forecast", int(peak))
 h4.metric("Beds Required", int(beds_needed))
 
+
 # =========================
 # CAPACITY SUMMARY
 # =========================
@@ -303,6 +345,7 @@ c1, c2, c3 = st.columns(3)
 c1.metric("Beds Needed", beds_needed)
 c2.metric("Doctors Needed", doctors_needed)
 c3.metric("Nurses Needed", nurses_needed)
+
 
 # =========================
 # QUICK CONTROLS
@@ -344,14 +387,31 @@ display_peak = peak if selected_time_window == "Next 24 Hours" else prediction
 
 st.markdown("---")
 
+
 # =========================
 # ROLE-BASED TABS
 # =========================
 if role == "admin":
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs([
+    (
+        tab1,
+        tab2,
+        tab3,
+        tab4,
+        tab5,
+        tab6,
+        tab7,
+        tab8,
+        tab9,
+        tab10,
+        tab11,
+        tab12,
+        tab13,
+        tab14,
+    ) = st.tabs([
         "📊 Overview",
         "📈 Forecast",
         "🤖 Hybrid Model",
+        "📏 Evaluation",
         "🧠 Simulation",
         "⚙️ Operations",
         "🏥 Departments",
@@ -361,7 +421,7 @@ if role == "admin":
         "📅 Appointments",
         "✅ Approvals",
         "📢 Decision Feed",
-        "🧾 Audit"
+        "🧾 Audit",
     ])
 
     with tab1:
@@ -380,52 +440,56 @@ if role == "admin":
         show_hybrid_model_panel(last_sequence)
 
     with tab4:
+        st.subheader("Forecast Evaluation and Model Comparison")
+        show_forecast_evaluation_panel()
+
+    with tab5:
         st.subheader("Digital Twin & Scenario Planning for Capacity Decisions")
         show_digital_twin_panel(prediction)
 
-    with tab5:
+    with tab6:
         st.subheader("Hospital Operations Center (Scheduling & Resources)")
         show_operations_panel(prediction)
 
-    with tab6:
+    with tab7:
         st.subheader("Department Capacity & Status")
         show_hospital_map_panel(prediction)
         if selected_department != "All Departments":
             st.info(f"Focused department view selected: {selected_department}")
 
-    with tab7:
+    with tab8:
         st.subheader("AI Explainability for Doctors")
         show_explainability_panel(last_sequence)
 
-    with tab8:
+    with tab9:
         st.subheader("Shift Management")
         show_all_shifts()
 
-    with tab9:
+    with tab10:
         st.subheader("Operating Room Booking Management")
         show_or_bookings(role="admin")
 
-    with tab10:
+    with tab11:
         st.subheader("Appointments Overview")
         show_admin_appointments_overview()
 
-    with tab11:
+    with tab12:
         st.subheader("Manager Approval Workflow")
         show_admin_approval_panel(
             peak=peak,
             beds_needed=beds_needed,
             doctors_needed=doctors_needed,
             emergency_level=emergency_level,
-            approver_name=name
+            approver_name=name,
         )
 
-    with tab12:
+    with tab13:
         st.subheader("Approved Decisions & History")
         show_staff_decision_feed(role=role, department=department)
         st.markdown("---")
         show_admin_decision_history()
 
-    with tab13:
+    with tab14:
         st.subheader("Decision Audit & Execution Trace")
         show_audit_summary()
         st.markdown("---")
@@ -440,7 +504,7 @@ elif role == "doctor":
         "🏥 My Department",
         "🕒 My Shifts",
         "🏥 OR / Appointments",
-        "📢 Notifications"
+        "📢 Notifications",
     ])
 
     with tab1:
@@ -484,7 +548,7 @@ elif role == "nurse":
         "🏥 My Department",
         "🕒 My Shifts",
         "📅 Appointments",
-        "📢 Notifications"
+        "📢 Notifications",
     ])
 
     with tab1:
@@ -520,11 +584,15 @@ else:
     st.error(f"Unsupported role: {role}")
     st.stop()
 
+
 # =========================
 # FOOTER
 # =========================
-st.markdown("""
-<div class="custom-footer">
-    Hospital Resource Optimization with AI • Graduation Project Dashboard
-</div>
-""", unsafe_allow_html=True)
+st.markdown(
+    """
+    <div class="custom-footer">
+        Hospital Resource Optimization with AI • Graduation Project Dashboard
+    </div>
+    """,
+    unsafe_allow_html=True
+)

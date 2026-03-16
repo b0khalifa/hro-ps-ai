@@ -408,3 +408,47 @@ def show_hybrid_model_panel(last_sequence):
     )
     fig.update_layout(height=350)
     st.plotly_chart(fig, use_container_width=True)
+
+def show_forecast_evaluation_panel():
+    st.markdown("## 📏 Forecast Evaluation Panel")
+
+    try:
+        eval_df = pd.read_csv("forecast_evaluation.csv")
+        detailed_df = pd.read_csv("forecast_predictions_detailed.csv")
+    except FileNotFoundError:
+        st.warning("Evaluation files not found. Run evaluate_forecast.py first.")
+        return
+
+    st.write("### Model Performance Comparison")
+    st.dataframe(eval_df, use_container_width=True, hide_index=True)
+
+    best_model_row = eval_df.sort_values("RMSE", ascending=True).iloc[0]
+    st.success(
+        f"Best model currently: **{best_model_row['Model']}** "
+        f"(RMSE = {best_model_row['RMSE']}, MAE = {best_model_row['MAE']}, MAPE = {best_model_row['MAPE']}%)"
+    )
+
+    fig_metrics = px.bar(
+        eval_df,
+        x="Model",
+        y=["MAE", "RMSE", "MAPE"],
+        barmode="group",
+        title="Forecast Error Metrics"
+    )
+    fig_metrics.update_layout(height=420, margin=dict(l=20, r=20, t=50, b=20))
+    st.plotly_chart(fig_metrics, use_container_width=True)
+
+    st.write("### Actual vs Predicted")
+    compare_df = detailed_df[["time_index", "actual", "lstm_pred", "arimax_pred", "hybrid_pred"]].copy()
+
+    fig_compare = px.line(
+        compare_df,
+        x="time_index",
+        y=["actual", "lstm_pred", "arimax_pred", "hybrid_pred"],
+        title="Actual vs Forecasted Patient Flow"
+    )
+    fig_compare.update_layout(height=450, margin=dict(l=20, r=20, t=50, b=20))
+    st.plotly_chart(fig_compare, use_container_width=True)
+
+    st.write("### Detailed Predictions")
+    st.dataframe(compare_df.tail(50), use_container_width=True, hide_index=True)
