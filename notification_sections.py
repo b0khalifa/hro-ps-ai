@@ -96,9 +96,7 @@ def show_staff_decision_feed(role, department=None):
         else:
             st.info(f"📌 {body}")
 
-        st.caption(
-            f"From: {sender_name} ({sender_role}) | Time: {timestamp}"
-        )
+        st.caption(f"From: {sender_name} ({sender_role}) | Time: {timestamp}")
 
         if str(reply_text).strip():
             st.success(f"Reply: {reply_text}")
@@ -149,10 +147,6 @@ def show_department_notice_board(department):
 
     if not messages:
         st.info("No department notices available.")
-        return
-
-    if not department or str(department).strip() == "":
-        st.info("No department selected.")
         return
 
     filtered = []

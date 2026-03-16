@@ -95,15 +95,13 @@ def show_admin_message_center(sender_name: str, sender_role: str):
             title = template.get("title", "Untitled Template")
             message = template.get("message", "")
             category = template.get("category", "general")
-            template_target_role = template.get("target_role", "all")
-            template_target_department = template.get("target_department", "All Departments")
             template_priority = template.get("priority", selected_priority)
 
             st.markdown(f"**{title}**")
             st.caption(
                 f"Category: {category} | "
-                f"Default Role: {template_target_role} | "
-                f"Default Department: {template_target_department}"
+                f"Default Role: {template.get('target_role', 'all')} | "
+                f"Default Department: {template.get('target_department', 'All Departments')}"
             )
             st.write(message)
 
@@ -116,7 +114,7 @@ def show_admin_message_center(sender_name: str, sender_role: str):
                     category=category,
                     title=title,
                     message=message,
-                    priority=template_priority if selected_priority == "normal" else selected_priority,
+                    priority=selected_priority if selected_priority else template_priority,
                 )
 
                 if result and result.get("status") == "sent":

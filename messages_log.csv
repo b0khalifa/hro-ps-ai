@@ -1,7 +1,0 @@
-message_id,timestamp,sender_role,sender_name,target_role,target_department,priority,category,title,message,status,reply,reply_by,reply_timestamp,acknowledged
-MSG-20260316202525040809,2026-03-16 20:25:25,admin,Hospital Admin,all,All Departments,critical,emergency,Emergency Surge Alert,Emergency surge alert: all available staff should review current assignments and prepare for overflow response.,sent,,,,no
-MSG-20260316202620545718,2026-03-16 20:26:20,admin,Hospital Admin,all,All Departments,high,shift,Shift Change Notice,Shift update notice: please review your latest assignment and acknowledge the change.,sent,,,,no
-MSG-20260316203523999700,2026-03-16 20:35:23,admin,Hospital Admin,all,All Departments,high,shift,Shift Change Notice,Shift update notice: please review your latest assignment and acknowledge the change.,sent,,,,no
-MSG-20260316203559888553,2026-03-16 20:35:59,admin,Hospital Admin,all,All Departments,high,shift,Shift Change Notice,Shift update notice: please review your latest assignment and acknowledge the change.,sent,,,,no
-MSG-20260316203821163072,2026-03-16 20:38:21,admin,Hospital Admin,all,All Departments,high,shift,Shift Change Notice,Shift update notice: please review your latest assignment and acknowledge the change.,sent,,,,no
-MSG-20260316203924582035,2026-03-16 20:39:24,admin,Hospital Admin,doctor,All Departments,high,shift,doctor2,shift change,sent,,,,no

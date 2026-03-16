@@ -164,6 +164,7 @@ def send_message_api(
 
 def send_quick_reply_api(message_id, reply_text, replied_by):
     url = f"{API_BASE_URL}/messages/reply"
+
     payload = {
         "message_id": message_id,
         "reply_text": reply_text,
