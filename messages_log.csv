@@ -1,0 +1,4 @@
+message_id,timestamp,sender_role,sender_name,target_role,target_department,priority,category,title,message,status,reply,reply_by,reply_timestamp,acknowledged
+MSG-20260316233445494008,2026-03-16 23:34:45,admin,Hospital Admin,all,All Departments,high,shift,Shift Change Notice,Shift update notice: please review your latest assignment and acknowledge the change.,sent,,,,no
+MSG-20260316233644887711,2026-03-16 23:36:44,admin,Hospital Admin,doctor,ER,high,shift,Shift Change Notice,Shift update notice: please review your latest assignment and acknowledge the change.,sent,,,,no
+MSG-20260316233757600258,2026-03-16 23:37:57,admin,Hospital Admin,doctor,ER,high,emergency,doctor1,تغيير شيفت,sent,,,,no

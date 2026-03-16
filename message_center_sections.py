@@ -16,6 +16,7 @@ TARGET_DEPARTMENT_OPTIONS = [
     "Surgery",
     "Radiology",
 ]
+
 PRIORITY_OPTIONS = ["normal", "high", "critical"]
 
 
@@ -35,9 +36,12 @@ def _safe_templates_response():
     if not response:
         return {"admin_templates": [], "staff_quick_replies": []}
 
+    admin_templates = response.get("admin_templates", [])
+    staff_quick_replies = response.get("staff_quick_replies", [])
+
     return {
-        "admin_templates": response.get("admin_templates", []),
-        "staff_quick_replies": response.get("staff_quick_replies", []),
+        "admin_templates": admin_templates,
+        "staff_quick_replies": staff_quick_replies,
     }
 
 
@@ -95,7 +99,6 @@ def show_admin_message_center(sender_name: str, sender_role: str):
             title = template.get("title", "Untitled Template")
             message = template.get("message", "")
             category = template.get("category", "general")
-            template_priority = template.get("priority", selected_priority)
 
             st.markdown(f"**{title}**")
             st.caption(
@@ -114,7 +117,7 @@ def show_admin_message_center(sender_name: str, sender_role: str):
                     category=category,
                     title=title,
                     message=message,
-                    priority=selected_priority if selected_priority else template_priority,
+                    priority=selected_priority,
                 )
 
                 if result and result.get("status") == "sent":
@@ -222,7 +225,9 @@ def show_staff_message_center(user_name: str, role: str, department: str):
         st.markdown(f"### {title}")
         _priority_badge(priority)
         st.write(message)
-        st.caption(f"From: {sender_name} ({sender_role}) | Time: {timestamp}")
+        st.caption(
+            f"From: {sender_name} ({sender_role}) | Time: {timestamp}"
+        )
 
         if str(reply_text).strip():
             st.success(f"Current Reply: {reply_text}")
@@ -232,11 +237,13 @@ def show_staff_message_center(user_name: str, role: str, department: str):
 
             if quick_replies:
                 cols = st.columns(4)
-
                 for q_idx, reply in enumerate(quick_replies):
                     col = cols[q_idx % 4]
                     with col:
-                        if st.button(reply, key=f"quick_reply_{message_id}_{q_idx}"):
+                        if st.button(
+                            reply,
+                            key=f"quick_reply_{message_id}_{q_idx}",
+                        ):
                             result = send_quick_reply_api(
                                 message_id=message_id,
                                 reply_text=reply,
@@ -254,7 +261,10 @@ def show_staff_message_center(user_name: str, role: str, department: str):
                 key=f"custom_reply_input_{message_id}",
             )
 
-            if st.button("Send Custom Reply", key=f"send_custom_reply_{message_id}"):
+            if st.button(
+                "Send Custom Reply",
+                key=f"send_custom_reply_{message_id}",
+            ):
                 if not custom_reply.strip():
                     st.warning("Please enter a reply first.")
                 else:

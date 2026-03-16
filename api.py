@@ -182,7 +182,7 @@ def save_messages_df(df: pd.DataFrame):
     df[MESSAGE_COLS].to_csv(MESSAGES_FILE, index=False)
 
 
-def _normalize_message_record(record: dict) -> dict:
+def normalize_message_record(record: dict) -> dict:
     return {
         "message_id": record.get("message_id", ""),
         "timestamp": record.get("timestamp", ""),
@@ -194,7 +194,7 @@ def _normalize_message_record(record: dict) -> dict:
         "category": record.get("category", "general"),
         "title": record.get("title", ""),
         "message": record.get("message", ""),
-        "status": record.get("status", ""),
+        "status": record.get("status", "sent"),
         "reply_text": record.get("reply", ""),
         "replied_by": record.get("reply_by", ""),
         "replied_at": record.get("reply_timestamp", ""),
@@ -229,8 +229,10 @@ def get_next_exog_from_sequence(sequence_array: np.ndarray):
 def predict_lstm(sequence_array: np.ndarray):
     scaled_sequence = scale_sequence(sequence_array)
     x_input = np.array([scaled_sequence], dtype=np.float32)
+
     pred_scaled = float(lstm_model.predict(x_input, verbose=0)[0][0])
-    return inverse_scale_target(pred_scaled)
+    pred_original = inverse_scale_target(pred_scaled)
+    return pred_original
 
 
 def predict_arimax(sequence_array: np.ndarray):
@@ -369,8 +371,7 @@ def get_messages(
         ]
 
     df = df.sort_values(by="timestamp", ascending=False).head(limit)
-
-    records = [_normalize_message_record(r) for r in df.to_dict(orient="records")]
+    records = [normalize_message_record(r) for r in df.to_dict(orient="records")]
 
     return {
         "messages": records,
@@ -482,10 +483,7 @@ def simulate(data: SimulateRequest):
     optimization_result = optimize_resources(simulated_patients)
     summary = optimization_result["summary"]
 
-    bed_result = allocate_beds(
-        int(np.ceil(simulated_patients)),
-        data.beds_available
-    )
+    bed_result = allocate_beds(int(np.ceil(simulated_patients)), data.beds_available)
     emergency = predict_emergency_load(simulated_patients)
 
     doctor_shortage = max(
