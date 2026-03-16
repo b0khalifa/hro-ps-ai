@@ -1,16 +1,27 @@
-import pandas as pd
 import streamlit as st
 
 from api_client import (
     get_message_templates,
-    get_messages,
     send_message_api,
-    reply_to_message_api,
+    get_messages,
+    send_quick_reply_api,
 )
 
 
-def _render_priority_badge(priority: str):
-    priority = str(priority).lower()
+TARGET_ROLE_OPTIONS = ["doctor", "nurse", "all"]
+TARGET_DEPARTMENT_OPTIONS = [
+    "All Departments",
+    "ER",
+    "ICU",
+    "General Ward",
+    "Surgery",
+    "Radiology",
+]
+PRIORITY_OPTIONS = ["normal", "high", "critical"]
+
+
+def _priority_badge(priority: str):
+    priority = str(priority).strip().lower()
 
     if priority == "critical":
         st.error("🚨 Critical")
@@ -20,214 +31,242 @@ def _render_priority_badge(priority: str):
         st.info("ℹ️ Normal")
 
 
-def show_admin_message_center(sender_name, sender_role="admin"):
-    st.markdown("## 💬 Admin Quick Messages Center")
+def _safe_templates_response():
+    response = get_message_templates()
 
-    templates_data = get_message_templates()
+    if not response:
+        return {"admin_templates": [], "staff_quick_replies": []}
 
-    if templates_data is None:
-        st.warning("Message template service unavailable.")
-        return
+    return {
+        "admin_templates": response.get("admin_templates", []),
+        "staff_quick_replies": response.get("staff_quick_replies", []),
+    }
 
-    templates = templates_data.get("admin_templates", [])
 
-    st.write("### Quick Message Shortcuts")
+def _safe_messages_response(role=None, department=None, limit=50):
+    response = get_messages(role=role, department=department, limit=limit)
 
-    if not templates:
-        st.info("No admin templates available.")
-    else:
-        for idx, template in enumerate(templates):
-            with st.container():
-                c1, c2 = st.columns([4, 1])
+    if not response:
+        return {"messages": [], "quick_replies": []}
 
-                with c1:
-                    st.markdown(f"**{template['title']}**")
-                    st.caption(
-                        f"Category: {template['category']} | "
-                        f"Target Role: {template['target_role']} | "
-                        f"Target Department: {template['target_department']}"
-                    )
-                    st.write(template["message"])
+    return {
+        "messages": response.get("messages", []),
+        "quick_replies": response.get("quick_replies", []),
+    }
 
-                with c2:
-                    if st.button(
-                        f"Send {idx + 1}",
-                        key=f"admin_template_send_{idx}"
-                    ):
-                        result = send_message_api(
-                            sender_role=sender_role,
-                            sender_name=sender_name,
-                            title=template["title"],
-                            message=template["message"],
-                            target_role=template["target_role"],
-                            target_department=template["target_department"],
-                            priority=template["priority"],
-                            category=template["category"],
-                        )
-                        if result:
-                            st.success("Message sent successfully.")
-                            st.rerun()
-                        else:
-                            st.error("Failed to send message.")
 
-                st.markdown("---")
+def show_admin_message_center(sender_name: str, sender_role: str):
+    st.markdown("## 💬 Admin Messaging Hub")
+    st.markdown("### Admin Quick Messages Center")
 
-    st.write("### Custom Broadcast Message")
+    data = _safe_templates_response()
+    templates = data["admin_templates"]
 
-    with st.form("custom_admin_message_form"):
-        title = st.text_input("Message Title")
-        message = st.text_area("Message Content")
-        target_role = st.selectbox(
+    top_col1, top_col2, top_col3 = st.columns(3)
+
+    with top_col1:
+        selected_target_role = st.selectbox(
             "Target Role",
-            ["all", "doctor", "nurse"]
+            TARGET_ROLE_OPTIONS,
+            index=2,
+            key="admin_target_role",
         )
-        target_department = st.selectbox(
+
+    with top_col2:
+        selected_target_department = st.selectbox(
             "Target Department",
-            ["All Departments", "ER", "ICU", "General Ward", "Surgery", "Radiology"]
+            TARGET_DEPARTMENT_OPTIONS,
+            index=0,
+            key="admin_target_department",
         )
-        priority = st.selectbox(
+
+    with top_col3:
+        selected_priority = st.selectbox(
             "Priority",
-            ["normal", "high", "critical"]
+            PRIORITY_OPTIONS,
+            index=1,
+            key="admin_message_priority",
         )
-        category = st.selectbox(
-            "Category",
-            ["general", "emergency", "coverage", "shift", "capacity"]
-        )
-
-        submitted = st.form_submit_button("Send Custom Message")
-
-        if submitted:
-            if not title.strip() or not message.strip():
-                st.error("Title and message are required.")
-            else:
-                result = send_message_api(
-                    sender_role=sender_role,
-                    sender_name=sender_name,
-                    title=title.strip(),
-                    message=message.strip(),
-                    target_role=target_role,
-                    target_department=target_department,
-                    priority=priority,
-                    category=category,
-                )
-                if result:
-                    st.success("Custom message sent successfully.")
-                    st.rerun()
-                else:
-                    st.error("Failed to send custom message.")
 
     st.markdown("---")
-    st.write("### Recent Sent Messages")
+    st.markdown("### Quick Message Shortcuts")
 
-    sent_messages = get_messages(limit=30)
-    sent_messages = [
-        msg for msg in sent_messages
-        if str(msg.get("sender_role", "")).lower() == "admin"
-    ]
+    if not templates:
+        st.info("No quick templates available.")
+    else:
+        for idx, template in enumerate(templates):
+            title = template.get("title", "Untitled Template")
+            message = template.get("message", "")
+            category = template.get("category", "general")
 
-    if not sent_messages:
-        st.info("No messages have been sent yet.")
-        return
+            st.markdown(f"**{title}**")
+            st.caption(f"Category: {category}")
+            st.write(message)
 
-    for msg in sent_messages:
-        with st.container():
-            st.markdown(f"**{msg.get('title', '-') }**")
-            st.write(msg.get("message", ""))
-
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.caption(f"To Role: {msg.get('target_role', '-')}")
-            with c2:
-                st.caption(f"To Department: {msg.get('target_department', '-')}")
-            with c3:
-                st.caption(f"Time: {msg.get('timestamp', '-')}")
-
-            if str(msg.get("reply", "")).strip():
-                st.success(
-                    f"Reply from {msg.get('reply_by', '-')} "
-                    f"at {msg.get('reply_timestamp', '-')}: {msg.get('reply', '')}"
+            if st.button(f"Send Template {idx + 1}", key=f"send_template_{idx}"):
+                result = send_message_api(
+                    sender_name=sender_name,
+                    sender_role=sender_role,
+                    target_role=selected_target_role,
+                    target_department=selected_target_department,
+                    category=category,
+                    title=title,
+                    message=message,
+                    priority=selected_priority,
                 )
+
+                if result and result.get("status") == "sent":
+                    st.success("Template message sent successfully.")
+                    st.rerun()
+                else:
+                    st.error("Failed to send template message.")
 
             st.markdown("---")
 
+    st.markdown("### Send Custom Message")
 
-def show_staff_message_center(user_name, user_role, department):
-    st.markdown("## 💬 Staff Message Inbox & Quick Replies")
-
-    templates_data = get_message_templates()
-    quick_replies = []
-    if templates_data is not None:
-        quick_replies = templates_data.get("staff_quick_replies", [])
-
-    inbox_messages = get_messages(
-        role=user_role,
-        department=department,
-        limit=50
+    custom_title = st.text_input("Custom Title", key="admin_custom_title")
+    custom_type = st.selectbox(
+        "Message Type",
+        ["custom", "emergency", "coverage", "shift", "capacity"],
+        key="admin_custom_type",
     )
+    custom_message = st.text_area("Custom Message", key="admin_custom_message")
 
-    if not inbox_messages:
-        st.info("No messages available in your inbox.")
-        return
-
-    for idx, msg in enumerate(inbox_messages):
-        with st.container():
-            st.markdown(f"**{msg.get('title', '-') }**")
-            _render_priority_badge(msg.get("priority", "normal"))
-            st.write(msg.get("message", ""))
-
-            st.caption(
-                f"From: {msg.get('sender_name', '-')} "
-                f"({msg.get('sender_role', '-')}) | "
-                f"Time: {msg.get('timestamp', '-')}"
+    if st.button("Send Custom Message", key="send_custom_admin_message"):
+        if not custom_title.strip() or not custom_message.strip():
+            st.warning("Please enter both title and message.")
+        else:
+            result = send_message_api(
+                sender_name=sender_name,
+                sender_role=sender_role,
+                target_role=selected_target_role,
+                target_department=selected_target_department,
+                category=custom_type,
+                title=custom_title.strip(),
+                message=custom_message.strip(),
+                priority=selected_priority,
             )
 
-            if str(msg.get("reply", "")).strip():
-                st.success(
-                    f"Your latest reply status: {msg.get('reply', '')} "
-                    f"| By: {msg.get('reply_by', '-')}"
-                )
+            if result and result.get("status") == "sent":
+                st.success("Custom message sent successfully.")
+                st.rerun()
+            else:
+                st.error("Failed to send custom message.")
 
-            st.write("#### Quick Replies")
+    st.markdown("---")
+    st.markdown("### Recently Sent Messages")
+
+    sent_data = _safe_messages_response(role=None, department=None, limit=20)
+    sent_messages = sent_data["messages"]
+
+    if not sent_messages:
+        st.info("No sent messages yet.")
+        return
+
+    for i, msg in enumerate(sent_messages):
+        title = msg.get("title", "Untitled")
+        message = msg.get("message", "")
+        priority = msg.get("priority", "normal")
+        target_role = msg.get("target_role", "all")
+        target_department = msg.get("target_department", "All Departments")
+        timestamp = msg.get("timestamp", "")
+        status = msg.get("status", "")
+
+        st.markdown(f"**{title}**")
+        _priority_badge(priority)
+        st.write(message)
+        st.caption(
+            f"Target Role: {target_role} | "
+            f"Target Department: {target_department} | "
+            f"Status: {status} | Time: {timestamp}"
+        )
+
+        reply_text = msg.get("reply_text", "")
+        replied_by = msg.get("replied_by", "")
+        replied_at = msg.get("replied_at", "")
+
+        if str(reply_text).strip():
+            st.success(f"Reply: {reply_text}")
+            st.caption(f"By: {replied_by} | At: {replied_at}")
+
+        if i < len(sent_messages) - 1:
+            st.markdown("---")
+
+
+def show_staff_message_center(user_name: str, role: str, department: str):
+    st.markdown("## 💬 Staff Message Center")
+
+    data = _safe_messages_response(role=role, department=department, limit=50)
+    messages = data["messages"]
+    quick_replies = data["quick_replies"]
+
+    if not messages:
+        st.info("No messages available.")
+        return
+
+    for idx, msg in enumerate(messages):
+        message_id = msg.get("message_id", "")
+        title = msg.get("title", "Untitled Message")
+        message = msg.get("message", "")
+        priority = msg.get("priority", "normal")
+        sender_name = msg.get("sender_name", "")
+        sender_role = msg.get("sender_role", "")
+        timestamp = msg.get("timestamp", "")
+        reply_text = msg.get("reply_text", "")
+        replied_by = msg.get("replied_by", "")
+        replied_at = msg.get("replied_at", "")
+
+        st.markdown(f"### {title}")
+        _priority_badge(priority)
+        st.write(message)
+        st.caption(f"From: {sender_name} ({sender_role}) | Time: {timestamp}")
+
+        if str(reply_text).strip():
+            st.success(f"Current Reply: {reply_text}")
+            st.caption(f"By: {replied_by} | At: {replied_at}")
+        else:
+            st.markdown("#### Quick Replies")
+
             if quick_replies:
                 cols = st.columns(4)
-                for q_idx, reply_text in enumerate(quick_replies):
-                    with cols[q_idx % 4]:
-                        if st.button(
-                            reply_text,
-                            key=f"quick_reply_{idx}_{q_idx}_{msg.get('message_id', '')}"
-                        ):
-                            result = reply_to_message_api(
-                                message_id=msg["message_id"],
-                                reply=reply_text,
-                                reply_by=user_name,
+
+                for q_idx, reply in enumerate(quick_replies):
+                    col = cols[q_idx % 4]
+                    with col:
+                        if st.button(reply, key=f"quick_reply_{message_id}_{q_idx}"):
+                            result = send_quick_reply_api(
+                                message_id=message_id,
+                                reply_text=reply,
+                                replied_by=user_name,
                             )
-                            if result:
-                                st.success("Reply sent.")
+
+                            if result and result.get("status") in ["updated", "success"]:
+                                st.success("Reply sent successfully.")
                                 st.rerun()
                             else:
                                 st.error("Failed to send reply.")
 
             custom_reply = st.text_input(
                 "Custom Reply",
-                key=f"custom_reply_input_{msg.get('message_id', idx)}"
+                key=f"custom_reply_input_{message_id}",
             )
 
-            if st.button(
-                "Send Custom Reply",
-                key=f"custom_reply_btn_{msg.get('message_id', idx)}"
-            ):
+            if st.button("Send Custom Reply", key=f"send_custom_reply_{message_id}"):
                 if not custom_reply.strip():
-                    st.error("Reply cannot be empty.")
+                    st.warning("Please enter a reply first.")
                 else:
-                    result = reply_to_message_api(
-                        message_id=msg["message_id"],
-                        reply=custom_reply.strip(),
-                        reply_by=user_name,
+                    result = send_quick_reply_api(
+                        message_id=message_id,
+                        reply_text=custom_reply.strip(),
+                        replied_by=user_name,
                     )
-                    if result:
-                        st.success("Custom reply sent.")
+
+                    if result and result.get("status") in ["updated", "success"]:
+                        st.success("Custom reply sent successfully.")
                         st.rerun()
                     else:
-                        st.error("Failed to send custom reply.")
+                        st.error("Failed to send reply.")
 
+        if idx < len(messages) - 1:
             st.markdown("---")

@@ -125,10 +125,10 @@ def get_messages(role=None, department=None, limit=50):
     try:
         response = requests.get(url, params=params, timeout=15)
         response.raise_for_status()
-        return response.json().get("messages", [])
+        return response.json()
     except requests.exceptions.RequestException as e:
         print("Get messages API error:", e)
-        return []
+        return None
 
 
 def send_message_api(
@@ -162,12 +162,13 @@ def send_message_api(
         return None
 
 
-def reply_to_message_api(message_id, reply, reply_by):
+def send_quick_reply_api(message_id, reply_text, replied_by):
     url = f"{API_BASE_URL}/messages/reply"
+
     payload = {
         "message_id": message_id,
-        "reply": reply,
-        "reply_by": reply_by,
+        "reply_text": reply_text,
+        "replied_by": replied_by,
     }
 
     try:
@@ -175,5 +176,30 @@ def reply_to_message_api(message_id, reply, reply_by):
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
-        print("Reply message API error:", e)
+        print("Quick reply API error:", e)
         return None
+
+
+def generate_recommendations(department_data):
+    recommendations = []
+
+    for _, dept in department_data.iterrows():
+        if dept["bed_shortage"] > 0:
+            recommendations.append(
+                f"Allocate additional beds to {dept['department']} "
+                f"(shortage = {int(dept['bed_shortage'])})."
+            )
+
+        if dept["doctor_shortage"] > 0:
+            recommendations.append(
+                f"Assign backup doctors to {dept['department']} "
+                f"(shortage = {int(dept['doctor_shortage'])})."
+            )
+
+        if dept["nurse_shortage"] > 0:
+            recommendations.append(
+                f"Allocate additional nurses to {dept['department']} "
+                f"(shortage = {int(dept['nurse_shortage'])})."
+            )
+
+    return recommendations
