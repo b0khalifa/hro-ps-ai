@@ -4,6 +4,12 @@ from typing import List
 import numpy as np
 import joblib
 from tensorflow.keras.models import load_model
+from fastapi import FastAPI, HTTPException, Depends
+from sqlalchemy.orm import Session
+
+from database import get_db
+from models import User, PatientFlow, Appointment, ORBooking, StaffShift, RecommendationLog
+from schemas import LoginRequest
 
 app = FastAPI(title="Hospital AI API")
 
@@ -225,3 +231,33 @@ def explain(data: ExplainRequest):
 
     result = explain_feature_importance(arr)
     return result
+
+@app.post("/auth/login")
+def login_user(payload: LoginRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.username == payload.username).first()
+
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    if user.password != payload.password:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    return {
+        "username": user.username,
+        "name": user.name,
+        "role": user.role,
+        "department": user.department
+    }
+
+@app.get("/users")
+def get_users(db: Session = Depends(get_db)):
+    users = db.query(User).all()
+    return [
+        {
+            "username": u.username,
+            "name": u.name,
+            "role": u.role,
+            "department": u.department
+        }
+        for u in users
+    ]
