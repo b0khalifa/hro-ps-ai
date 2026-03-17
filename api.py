@@ -154,7 +154,7 @@ STAFF_QUICK_REPLIES = [
     "نحتاج دعم دكاترة",
     "نحتاج دعم تمريض",
     "يوجد عجز",
-    "لا أستطيع التغطية الآن",
+    "لا أتطيع التغطية الآن",
 ]
 
 
@@ -366,6 +366,14 @@ def system_status():
         },
         "feature_count": FEATURE_COUNT,
         "sequence_length": SEQUENCE_LENGTH,
+    }
+
+@app.get("/feature_config")
+def get_feature_config():
+    return {
+        "feature_count": FEATURE_COUNT,
+        "sequence_length": SEQUENCE_LENGTH,
+        "feature_columns": FEATURE_COLUMNS,
     }
 
 
