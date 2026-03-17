@@ -6,3 +6,4 @@ MSG-20260317001456211025,2026-03-17 00:14:56,admin,Hospital Admin,all,All Depart
 MSG-20260317174314118936,2026-03-17 17:43:14,admin,Hospital Admin,all,All Departments,high,coverage,Doctor Coverage Request,Urgent coverage needed: an additional doctor is required to cover the current shift immediately.,sent,,,,no
 MSG-20260317181440172140,2026-03-17 18:14:40,admin,Hospital Admin,all,All Departments,high,shift,Shift Change Notice,Shift update notice: please review your latest assignment and acknowledge the change.,sent,,,,no
 MSG-20260317181453024567,2026-03-17 18:14:53,admin,Hospital Admin,all,All Departments,high,shift,Shift Change Notice,Shift update notice: please review your latest assignment and acknowledge the change.,sent,,,,no
+MSG-20260317191810670714,2026-03-17 19:18:10,admin,Hospital Admin,all,All Departments,high,capacity,Bed Shortage Warning,Capacity warning: bed pressure is increasing. Review admissions and discharge flow immediately.,sent,,,,no

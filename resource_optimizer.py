@@ -47,15 +47,14 @@ DEPARTMENT_CONFIG = {
 
 
 def _safe_ceil(value):
-    value = max(0.0, float(value))
-    return int(math.ceil(value))
+    return int(math.ceil(float(value)))
 
 
 def _department_status(required_beds, beds_capacity, warning_ratio, critical_ratio):
     if beds_capacity <= 0:
         return "critical"
 
-    occupancy = required_beds / beds_capacity if beds_capacity > 0 else 1.0
+    occupancy = required_beds / beds_capacity
 
     if occupancy >= critical_ratio:
         return "critical"
@@ -120,16 +119,16 @@ def _build_recommendations(df: pd.DataFrame):
 
 
 def optimize_resources(predicted_patients):
-    predicted_patients = max(0.0, float(predicted_patients))
+    predicted_patients = float(predicted_patients)
 
     department_rows = []
 
     for department, cfg in DEPARTMENT_CONFIG.items():
-        department_patients = max(0.0, predicted_patients * cfg["share"])
+        department_patients = predicted_patients * cfg["share"]
 
         beds_required = _safe_ceil(department_patients * 1.10)
-        doctors_required = max(1, _safe_ceil(department_patients / 8)) if department_patients > 0 else 0
-        nurses_required = max(1, _safe_ceil(department_patients / 4)) if department_patients > 0 else 0
+        doctors_required = max(1, _safe_ceil(department_patients / 8))
+        nurses_required = max(1, _safe_ceil(department_patients / 4))
 
         bed_shortage = max(0, beds_required - cfg["beds_capacity"])
         doctor_shortage = max(0, doctors_required - cfg["doctors_capacity"])
