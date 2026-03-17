@@ -3,7 +3,12 @@ import pandas as pd
 import numpy as np
 
 from auth import login_form, require_login, logout_button
-from api_client import get_prediction, get_system_status, get_latest_sequence
+from api_client import (
+    get_prediction,
+    get_system_status,
+    get_latest_sequence,
+    get_feature_config,
+)
 
 from dashboard_sections import (
     show_forecast_evaluation_panel,
@@ -154,49 +159,68 @@ st.info(
 )
 
 # =========================
-# LOAD HISTORICAL DATA (fallback for charts)
+# LOAD DATA
 # =========================
 try:
-    df = pd.read_csv("clean_data.csv")
+    df = pd.read_csv("engineered_data.csv")
 except FileNotFoundError:
-    st.error("clean_data.csv not found.")
-    st.stop()
+    try:
+        df = pd.read_csv("clean_data.csv")
+    except FileNotFoundError:
+        st.error("Neither engineered_data.csv nor clean_data.csv was found.")
+        st.stop()
 
-required_cols = [
-    "patients",
-    "day_of_week",
-    "month",
-    "is_weekend",
-    "holiday",
-    "weather",
-]
-
-missing_cols = [col for col in required_cols if col not in df.columns]
-if missing_cols:
-    st.error(f"Missing required columns: {missing_cols}")
-    st.stop()
-
-features = df[required_cols].values.astype(float)
-
-if len(features) < 24:
-    st.error("Need at least 24 rows of data.")
+if "patients" not in df.columns:
+    st.error("Required column 'patients' not found in dataset.")
     st.stop()
 
 # =========================
-# API STATUS
+# API STATUS + FEATURE CONFIG
 # =========================
 status_result = get_system_status()
 api_online = status_result is not None and status_result.get("status") == "running"
 
+feature_config = get_feature_config()
+if feature_config is None:
+    st.error("Could not load feature configuration from API.")
+    st.stop()
+
+sequence_length = int(feature_config.get("sequence_length", 24))
+feature_columns = feature_config.get("feature_columns", [])
+
+if not feature_columns:
+    st.error("Feature columns are missing from API feature configuration.")
+    st.stop()
+
+missing_feature_cols = [col for col in feature_columns if col not in df.columns]
+if missing_feature_cols:
+    st.error(f"Missing required model feature columns in dataset: {missing_feature_cols}")
+    st.stop()
+
+for col in feature_columns:
+    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+df = df.dropna(subset=feature_columns + ["patients"]).reset_index(drop=True)
+
+if len(df) < sequence_length:
+    st.error(f"Need at least {sequence_length} rows of engineered data.")
+    st.stop()
+
 # =========================
-# LOAD LATEST SEQUENCE FROM API / DB
+# LOAD LATEST SEQUENCE FROM API / FILE
 # =========================
 latest_sequence = get_latest_sequence()
 
-if latest_sequence is not None and len(latest_sequence) == 24:
-    last_sequence = np.array(latest_sequence, dtype=float)
+if latest_sequence is not None:
+    latest_sequence = np.array(latest_sequence, dtype=float)
+    expected_shape = (sequence_length, len(feature_columns))
+
+    if latest_sequence.shape == expected_shape:
+        last_sequence = latest_sequence
+    else:
+        last_sequence = df[feature_columns].tail(sequence_length).values.astype(float)
 else:
-    last_sequence = features[-24:]
+    last_sequence = df[feature_columns].tail(sequence_length).values.astype(float)
 
 # =========================
 # API PREDICTION
@@ -221,6 +245,8 @@ nurses_needed = int(recommended.get("nurses_needed", 0))
 predictions = []
 sequence = last_sequence.copy()
 
+patients_idx = feature_columns.index("patients") if "patients" in feature_columns else 0
+
 for _ in range(24):
     res = get_prediction(sequence)
     if res is None or "predicted_patients_next_hour" not in res:
@@ -230,7 +256,7 @@ for _ in range(24):
     predictions.append(pred)
 
     new_row = sequence[-1].copy()
-    new_row[0] = pred
+    new_row[patients_idx] = pred
     sequence = np.vstack([sequence[1:], new_row])
 
 if len(predictions) == 0:
@@ -238,7 +264,7 @@ if len(predictions) == 0:
     st.stop()
 
 peak = float(np.max(predictions))
-current_patients_value = int(last_sequence[-1][0])
+current_patients_value = int(last_sequence[-1][patients_idx])
 
 # =========================
 # SIDEBAR
@@ -264,6 +290,10 @@ with st.sidebar:
     st.markdown("### Dataset Info")
     st.write(f"Rows: {len(df)}")
     st.write(f"Columns: {len(df.columns)}")
+
+    st.markdown("### Model Input")
+    st.write(f"Sequence Length: **{sequence_length}**")
+    st.write(f"Feature Count: **{len(feature_columns)}**")
 
     st.markdown("### Live Summary")
     st.metric("Current Patients", current_patients_value)

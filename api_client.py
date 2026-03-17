@@ -8,7 +8,7 @@ def get_prediction(sequence):
     payload = {"sequence": sequence.tolist()}
 
     try:
-        response = requests.post(url, json=payload, timeout=15)
+        response = requests.post(url, json=payload, timeout=20)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
@@ -27,7 +27,7 @@ def simulate(predicted_patients, beds_available, doctors_available, demand_incre
     }
 
     try:
-        response = requests.post(url, json=payload, timeout=15)
+        response = requests.post(url, json=payload, timeout=20)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
@@ -40,7 +40,7 @@ def explain_prediction(sequence):
     payload = {"sequence": sequence.tolist()}
 
     try:
-        response = requests.post(url, json=payload, timeout=15)
+        response = requests.post(url, json=payload, timeout=20)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
@@ -57,6 +57,18 @@ def get_system_status():
         return response.json()
     except requests.exceptions.RequestException as e:
         print("Status API error:", e)
+        return None
+
+
+def get_feature_config():
+    url = f"{API_BASE_URL}/feature_config"
+
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print("Feature config API error:", e)
         return None
 
 
@@ -80,7 +92,7 @@ def get_latest_sequence():
     url = f"{API_BASE_URL}/patient_flow/latest"
 
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=15)
         response.raise_for_status()
         data = response.json()
         return data.get("sequence")
@@ -93,7 +105,7 @@ def get_optimization(predicted_patients):
     url = f"{API_BASE_URL}/optimize_resources/{predicted_patients}"
 
     try:
-        response = requests.get(url, timeout=15)
+        response = requests.get(url, timeout=20)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
@@ -123,7 +135,7 @@ def get_messages(role=None, department=None, limit=50):
         params["department"] = department
 
     try:
-        response = requests.get(url, params=params, timeout=15)
+        response = requests.get(url, params=params, timeout=20)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
@@ -140,8 +152,13 @@ def send_message_api(
     target_department="All Departments",
     priority="normal",
     category="general",
+    message_type=None,
 ):
     url = f"{API_BASE_URL}/messages/send"
+
+    if message_type is not None:
+        category = message_type
+
     payload = {
         "sender_role": sender_role,
         "sender_name": sender_name,
@@ -154,7 +171,7 @@ def send_message_api(
     }
 
     try:
-        response = requests.post(url, json=payload, timeout=15)
+        response = requests.post(url, json=payload, timeout=20)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
@@ -162,19 +179,26 @@ def send_message_api(
         return None
 
 
-def send_quick_reply_api(message_id, reply_text, replied_by):
+def reply_to_message_api(message_id, reply, reply_by):
     url = f"{API_BASE_URL}/messages/reply"
-
     payload = {
         "message_id": message_id,
-        "reply_text": reply_text,
-        "replied_by": replied_by,
+        "reply": reply,
+        "reply_by": reply_by,
     }
 
     try:
-        response = requests.post(url, json=payload, timeout=15)
+        response = requests.post(url, json=payload, timeout=20)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
-        print("Quick reply API error:", e)
+        print("Reply message API error:", e)
         return None
+
+
+def send_quick_reply_api(message_id, reply_text, replied_by):
+    return reply_to_message_api(
+        message_id=message_id,
+        reply=reply_text,
+        reply_by=replied_by,
+    )

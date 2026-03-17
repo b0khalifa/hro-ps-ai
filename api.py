@@ -13,7 +13,7 @@ from tensorflow.keras.models import load_model
 
 from resource_optimizer import optimize_resources
 from database import get_db
-from models import User, PatientFlow
+from models import User
 from schemas import LoginRequest
 
 app = FastAPI(title="Hospital AI API")
@@ -23,6 +23,8 @@ app = FastAPI(title="Hospital AI API")
 # FILES
 # ========================================
 MESSAGES_FILE = "messages_log.csv"
+ENGINEERED_FILE = "engineered_data.csv"
+FEATURE_METADATA_FILE = "feature_engineering_metadata.json"
 
 MESSAGE_COLS = [
     "message_id",
@@ -56,15 +58,67 @@ with open("hybrid_config.json", "r", encoding="utf-8") as f:
 
 HYBRID_LSTM_WEIGHT = float(hybrid_config.get("lstm_weight", 0.95))
 HYBRID_ARIMAX_WEIGHT = float(hybrid_config.get("arimax_weight", 0.05))
+SEQUENCE_LENGTH = 24
 
-FEATURE_NAMES = [
-    "patients",
-    "day_of_week",
-    "month",
-    "is_weekend",
-    "holiday",
-    "weather",
-]
+
+# ========================================
+# FEATURE CONFIG
+# ========================================
+def load_feature_columns() -> List[str]:
+    if os.path.exists(FEATURE_METADATA_FILE):
+        try:
+            with open(FEATURE_METADATA_FILE, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+
+            for key in [
+                "feature_columns",
+                "model_features",
+                "input_features",
+                "sequence_features",
+                "features",
+            ]:
+                value = meta.get(key)
+                if isinstance(value, list) and len(value) > 0:
+                    return value
+        except Exception:
+            pass
+
+    if not os.path.exists(ENGINEERED_FILE):
+        raise FileNotFoundError(
+            f"{ENGINEERED_FILE} not found and no valid {FEATURE_METADATA_FILE} found."
+        )
+
+    df = pd.read_csv(ENGINEERED_FILE)
+
+    exclude_cols = {
+        "datetime",
+        "date",
+        "timestamp",
+    }
+
+    numeric_cols = []
+    for col in df.columns:
+        if col in exclude_cols:
+            continue
+
+        series = pd.to_numeric(df[col], errors="coerce")
+        if series.notna().sum() > 0:
+            numeric_cols.append(col)
+
+    if "patients" in numeric_cols:
+        numeric_cols = ["patients"] + [c for c in numeric_cols if c != "patients"]
+
+    if len(numeric_cols) == 0:
+        raise ValueError("No usable numeric feature columns found in engineered_data.csv")
+
+    return numeric_cols
+
+
+FEATURE_COLUMNS = load_feature_columns()
+FEATURE_COUNT = len(FEATURE_COLUMNS)
+
+FEATURE_NAMES = FEATURE_COLUMNS.copy()
+
 
 ADMIN_MESSAGE_TEMPLATES = [
     {
@@ -152,8 +206,8 @@ class SendMessageRequest(BaseModel):
 
 class ReplyMessageRequest(BaseModel):
     message_id: str
-    reply_text: str
-    replied_by: str
+    reply: str
+    reply_by: str
 
 
 # ========================================
@@ -182,28 +236,8 @@ def save_messages_df(df: pd.DataFrame):
     df[MESSAGE_COLS].to_csv(MESSAGES_FILE, index=False)
 
 
-def normalize_message_record(record: dict) -> dict:
-    return {
-        "message_id": record.get("message_id", ""),
-        "timestamp": record.get("timestamp", ""),
-        "sender_role": record.get("sender_role", ""),
-        "sender_name": record.get("sender_name", ""),
-        "target_role": record.get("target_role", "all"),
-        "target_department": record.get("target_department", "All Departments"),
-        "priority": record.get("priority", "normal"),
-        "category": record.get("category", "general"),
-        "title": record.get("title", ""),
-        "message": record.get("message", ""),
-        "status": record.get("status", "sent"),
-        "reply_text": record.get("reply", ""),
-        "replied_by": record.get("reply_by", ""),
-        "replied_at": record.get("reply_timestamp", ""),
-        "acknowledged": record.get("acknowledged", "no"),
-    }
-
-
 def validate_sequence_shape(arr: np.ndarray):
-    return arr.shape == (24, 6)
+    return arr.shape == (SEQUENCE_LENGTH, FEATURE_COUNT)
 
 
 def scale_sequence(sequence_array: np.ndarray):
@@ -218,11 +252,11 @@ def inverse_scale_target(pred_scaled: float):
 
 
 def get_next_exog_from_sequence(sequence_array: np.ndarray):
+    if FEATURE_COUNT < 2:
+        raise ValueError("Not enough features available for ARIMAX exogenous forecast.")
+
     last_row = sequence_array[-1]
-    exog = np.array(
-        [[last_row[1], last_row[2], last_row[3], last_row[4], last_row[5]]],
-        dtype=float
-    )
+    exog = np.array([last_row[1:]], dtype=float)
     return exog
 
 
@@ -296,10 +330,8 @@ def explain_feature_importance(sequence_array: np.ndarray):
 
         if feature_name == "patients":
             modified[-1, i] = modified[-1, i] * 1.10
-        elif feature_name in ["day_of_week", "month", "weather"]:
-            modified[-1, i] = modified[-1, i] + 1
         else:
-            modified[-1, i] = 1 - modified[-1, i]
+            modified[-1, i] = modified[-1, i] + 1
 
         new_result = predict_hybrid(modified)
         new_pred = float(new_result["hybrid_prediction"])
@@ -336,6 +368,17 @@ def system_status():
             "lstm": HYBRID_LSTM_WEIGHT,
             "arimax": HYBRID_ARIMAX_WEIGHT,
         },
+        "sequence_length": SEQUENCE_LENGTH,
+        "feature_count": FEATURE_COUNT,
+    }
+
+
+@app.get("/feature_config")
+def get_feature_config():
+    return {
+        "sequence_length": SEQUENCE_LENGTH,
+        "feature_count": FEATURE_COUNT,
+        "feature_columns": FEATURE_COLUMNS,
     }
 
 
@@ -371,12 +414,7 @@ def get_messages(
         ]
 
     df = df.sort_values(by="timestamp", ascending=False).head(limit)
-    records = [normalize_message_record(r) for r in df.to_dict(orient="records")]
-
-    return {
-        "messages": records,
-        "quick_replies": STAFF_QUICK_REPLIES,
-    }
+    return {"messages": df.to_dict(orient="records")}
 
 
 @app.post("/messages/send")
@@ -419,8 +457,8 @@ def reply_to_message(payload: ReplyMessageRequest):
     if not mask.any():
         raise HTTPException(status_code=404, detail="Message not found")
 
-    df.loc[mask, "reply"] = payload.reply_text
-    df.loc[mask, "reply_by"] = payload.replied_by
+    df.loc[mask, "reply"] = payload.reply
+    df.loc[mask, "reply_by"] = payload.reply_by
     df.loc[mask, "reply_timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     df.loc[mask, "acknowledged"] = "yes"
     df.loc[mask, "status"] = "replied"
@@ -444,7 +482,10 @@ def predict(data: PredictRequest):
     arr = np.array(data.sequence, dtype=float)
 
     if not validate_sequence_shape(arr):
-        raise HTTPException(status_code=400, detail="Input must be shape (24, 6)")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Input must be shape ({SEQUENCE_LENGTH}, {FEATURE_COUNT})"
+        )
 
     pred_result = predict_hybrid(arr)
     hybrid_pred = float(pred_result["hybrid_prediction"])
@@ -483,7 +524,10 @@ def simulate(data: SimulateRequest):
     optimization_result = optimize_resources(simulated_patients)
     summary = optimization_result["summary"]
 
-    bed_result = allocate_beds(int(np.ceil(simulated_patients)), data.beds_available)
+    bed_result = allocate_beds(
+        int(np.ceil(simulated_patients)),
+        data.beds_available
+    )
     emergency = predict_emergency_load(simulated_patients)
 
     doctor_shortage = max(
@@ -512,7 +556,10 @@ def explain(data: ExplainRequest):
     arr = np.array(data.sequence, dtype=float)
 
     if not validate_sequence_shape(arr):
-        raise HTTPException(status_code=400, detail="Input must be shape (24, 6)")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Input must be shape ({SEQUENCE_LENGTH}, {FEATURE_COUNT})"
+        )
 
     return explain_feature_importance(arr)
 
@@ -548,28 +595,31 @@ def get_users(db: Session = Depends(get_db)):
 
 
 @app.get("/patient_flow/latest")
-def get_latest_patient_flow(db: Session = Depends(get_db)):
-    rows = (
-        db.query(PatientFlow)
-        .order_by(PatientFlow.id.desc())
-        .limit(24)
-        .all()
-    )
+def get_latest_patient_flow():
+    if not os.path.exists(ENGINEERED_FILE):
+        raise HTTPException(status_code=404, detail=f"{ENGINEERED_FILE} not found")
 
-    if len(rows) < 24:
-        raise HTTPException(status_code=404, detail="Not enough patient flow rows found")
+    df = pd.read_csv(ENGINEERED_FILE)
 
-    rows = list(reversed(rows))
+    missing = [col for col in FEATURE_COLUMNS if col not in df.columns]
+    if missing:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Missing feature columns in engineered data: {missing}"
+        )
 
-    sequence = []
-    for r in rows:
-        sequence.append([
-            r.patients,
-            r.day_of_week,
-            r.month,
-            r.is_weekend,
-            r.holiday,
-            r.weather,
-        ])
+    for col in FEATURE_COLUMNS:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df.dropna(subset=FEATURE_COLUMNS).reset_index(drop=True)
+
+    if len(df) < SEQUENCE_LENGTH:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Not enough rows found in {ENGINEERED_FILE}"
+        )
+
+    rows = df[FEATURE_COLUMNS].tail(SEQUENCE_LENGTH)
+    sequence = rows.values.astype(float).tolist()
 
     return {"sequence": sequence}
