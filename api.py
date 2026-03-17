@@ -108,11 +108,78 @@ STAFF_QUICK_REPLIES = [
 
 
 def load_feature_columns() -> List[str]:
+    # 1) Preferred: read directly from scaler if available
     if hasattr(x_scaler, "feature_names_in_"):
         cols = list(x_scaler.feature_names_in_)
         if cols:
             return cols
-    raise ValueError("x_scaler.pkl does not contain feature names. Re-run prepare_sequences_v2.py")
+
+    # 2) Fallback: read from feature engineering metadata
+    metadata_file = "feature_engineering_metadata.json"
+    if os.path.exists(metadata_file):
+        try:
+            with open(metadata_file, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+
+            for key in [
+                "feature_columns",
+                "final_feature_columns",
+                "model_feature_columns",
+                "training_feature_columns",
+            ]:
+                cols = meta.get(key)
+                if isinstance(cols, list) and len(cols) > 0:
+                    return cols
+        except Exception:
+            pass
+
+    # 3) Fallback: infer from engineered_data.csv by removing non-feature columns
+    if os.path.exists(ENGINEERED_FILE):
+        try:
+            df_tmp = pd.read_csv(ENGINEERED_FILE, nrows=5)
+            exclude_cols = {
+                "datetime",
+                "date",
+                "timestamp",
+                "target",
+                "y",
+            }
+            cols = [c for c in df_tmp.columns if c not in exclude_cols]
+            if len(cols) >= 2:
+                return cols
+        except Exception:
+            pass
+
+    # 4) Last fallback: use a fixed known feature list for your v2 pipeline
+    return [
+        "patients",
+        "day_of_week",
+        "month",
+        "is_weekend",
+        "holiday",
+        "weather",
+        "lag_1",
+        "lag_2",
+        "lag_3",
+        "lag_6",
+        "lag_12",
+        "lag_24",
+        "rolling_mean_3",
+        "rolling_std_3",
+        "rolling_mean_6",
+        "rolling_std_6",
+        "rolling_mean_12",
+        "rolling_std_12",
+        "rolling_mean_24",
+        "rolling_std_24",
+        "diff_1",
+        "diff_24",
+        "hour_sin",
+        "hour_cos",
+        "dow_sin",
+        "dow_cos",
+    ]
+
 
 FEATURE_COLUMNS = load_feature_columns()
 FEATURE_COUNT = len(FEATURE_COLUMNS)
