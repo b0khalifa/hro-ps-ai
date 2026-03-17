@@ -88,3 +88,30 @@ class AuditLog(Base):
     target = Column(String, nullable=True)
     status = Column(String, nullable=True)
     details = Column(Text, nullable=True)
+
+
+class MessageLog(Base):
+    __tablename__ = "message_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    message_id = Column(String, unique=True, nullable=False, index=True)
+    timestamp = Column(String, nullable=False)
+
+    sender_role = Column(String, nullable=False)
+    sender_name = Column(String, nullable=False)
+
+    target_role = Column(String, nullable=False, default="all")
+    target_department = Column(String, nullable=False, default="All Departments")
+
+    priority = Column(String, nullable=False, default="normal")
+    category = Column(String, nullable=False, default="general")
+    title = Column(String, nullable=False)
+    message = Column(Text, nullable=False)
+
+    status = Column(String, nullable=False, default="sent")
+
+    reply = Column(Text, nullable=True)
+    reply_by = Column(String, nullable=True)
+    reply_timestamp = Column(String, nullable=True)
+
+    acknowledged = Column(String, nullable=False, default="no")

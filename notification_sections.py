@@ -2,8 +2,13 @@ import streamlit as st
 from api_client import get_messages
 
 
-def _fetch_messages(role=None, department=None, limit=50):
-    response = get_messages(role=role, department=department, limit=limit)
+def _fetch_messages(role=None, department=None, limit=50, unread_only=False):
+    response = get_messages(
+        role=role,
+        department=department,
+        limit=limit,
+        unread_only=unread_only,
+    )
 
     if not response:
         return []
@@ -18,6 +23,26 @@ def _fetch_messages(role=None, department=None, limit=50):
             clean_messages.append(msg)
 
     return clean_messages
+
+
+def _render_reply(msg: dict):
+    reply = str(msg.get("reply", "")).strip()
+    reply_by = str(msg.get("reply_by", "")).strip()
+    reply_timestamp = str(msg.get("reply_timestamp", "")).strip()
+
+    if not reply:
+        return
+
+    st.success(f"Reply: {reply}")
+
+    caption_parts = []
+    if reply_by:
+        caption_parts.append(f"By: {reply_by}")
+    if reply_timestamp:
+        caption_parts.append(f"At: {reply_timestamp}")
+
+    if caption_parts:
+        st.caption(" | ".join(caption_parts))
 
 
 def show_alert_center(role=None, department=None):
@@ -55,6 +80,7 @@ def show_alert_center(role=None, department=None):
 
         st.write(body)
         st.caption(f"From: {sender_name} ({sender_role}) | Time: {timestamp}")
+        _render_reply(msg)
         st.markdown("---")
 
 
@@ -68,7 +94,8 @@ def show_staff_decision_feed(role, department=None):
         return
 
     decision_messages = [
-        msg for msg in messages
+        msg
+        for msg in messages
         if str(msg.get("category", "")).lower() in ["emergency", "coverage", "shift", "capacity", "custom"]
     ]
 
@@ -83,9 +110,6 @@ def show_staff_decision_feed(role, department=None):
         sender_name = msg.get("sender_name", "")
         sender_role = msg.get("sender_role", "")
         timestamp = msg.get("timestamp", "")
-        reply_text = msg.get("reply_text", "")
-        replied_by = msg.get("replied_by", "")
-        replied_at = msg.get("replied_at", "")
 
         st.markdown(f"### {title}")
 
@@ -97,11 +121,7 @@ def show_staff_decision_feed(role, department=None):
             st.info(f"📌 {body}")
 
         st.caption(f"From: {sender_name} ({sender_role}) | Time: {timestamp}")
-
-        if str(reply_text).strip():
-            st.success(f"Reply: {reply_text}")
-            st.caption(f"By: {replied_by} | At: {replied_at}")
-
+        _render_reply(msg)
         st.markdown("---")
 
 
@@ -115,6 +135,7 @@ def show_admin_decision_history():
         return
 
     import pandas as pd
+
     df = pd.DataFrame(messages)
 
     keep_cols = [
@@ -129,9 +150,10 @@ def show_admin_decision_history():
         "title",
         "message",
         "status",
-        "reply_text",
-        "replied_by",
-        "replied_at",
+        "reply",
+        "reply_by",
+        "reply_timestamp",
+        "acknowledged",
     ]
 
     available_cols = [c for c in keep_cols if c in df.columns]
@@ -169,4 +191,5 @@ def show_department_notice_board(department):
         st.markdown(f"### {title}")
         st.info(body)
         st.caption(f"From: {sender_name} ({sender_role}) | Time: {timestamp}")
+        _render_reply(msg)
         st.markdown("---")

@@ -13,8 +13,10 @@ def run_step(script_name):
 
 
 if __name__ == "__main__":
-    run_step("prepare_sequences.py")
-    run_step("train_arimax.py")
-    run_step("train_lstm.py")
+    run_step("feature_engineering.py")
+    run_step("prepare_sequences_v2.py")
+    run_step("train_arimax_v2.py")
+    run_step("train_lstm_v2.py")
+    run_step("build_hybrid.py")
 
-    print("\n✅ Full retraining pipeline completed successfully.")
+    print("\n✅ Full v2 retraining pipeline completed successfully.")

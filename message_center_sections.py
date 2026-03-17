@@ -7,7 +7,6 @@ from api_client import (
     send_quick_reply_api,
 )
 
-
 TARGET_ROLE_OPTIONS = ["doctor", "nurse", "all"]
 TARGET_DEPARTMENT_OPTIONS = [
     "All Departments",
@@ -17,7 +16,6 @@ TARGET_DEPARTMENT_OPTIONS = [
     "Surgery",
     "Radiology",
 ]
-
 PRIORITY_OPTIONS = ["normal", "high", "critical"]
 
 
@@ -37,17 +35,20 @@ def _safe_templates_response():
     if not response:
         return {"admin_templates": [], "staff_quick_replies": []}
 
-    admin_templates = response.get("admin_templates", [])
-    staff_quick_replies = response.get("staff_quick_replies", [])
-
     return {
-        "admin_templates": admin_templates,
-        "staff_quick_replies": staff_quick_replies,
+        "admin_templates": response.get("admin_templates", []),
+        "staff_quick_replies": response.get("staff_quick_replies", []),
     }
 
 
-def _safe_messages_response(role=None, department=None, limit=50):
-    response = get_messages(role=role, department=department, limit=limit)
+def _safe_messages_response(role=None, department=None, limit=50, unread_only=False):
+    response = get_messages(
+        role=role,
+        department=department,
+        limit=limit,
+        unread_only=unread_only,
+    )
+
     if not response:
         return {"messages": [], "quick_replies": []}
 
@@ -55,6 +56,22 @@ def _safe_messages_response(role=None, department=None, limit=50):
         "messages": response.get("messages", []),
         "quick_replies": response.get("quick_replies", []),
     }
+
+
+def _reply_block(msg: dict):
+    reply = str(msg.get("reply", "")).strip()
+    reply_by = str(msg.get("reply_by", "")).strip()
+    reply_timestamp = str(msg.get("reply_timestamp", "")).strip()
+
+    if reply:
+        st.success(f"Reply: {reply}")
+        caption_parts = []
+        if reply_by:
+            caption_parts.append(f"By: {reply_by}")
+        if reply_timestamp:
+            caption_parts.append(f"At: {reply_timestamp}")
+        if caption_parts:
+            st.caption(" | ".join(caption_parts))
 
 
 def show_admin_message_center(sender_name: str, sender_role: str):
@@ -100,31 +117,25 @@ def show_admin_message_center(sender_name: str, sender_role: str):
             title = template.get("title", "Untitled Template")
             message = template.get("message", "")
             category = template.get("category", "general")
-            default_role = template.get("target_role", "all")
-            default_department = template.get("target_department", "All Departments")
-            default_priority = template.get("priority", selected_priority)
 
             st.markdown(f"**{title}**")
             st.caption(
-                f"Category: {category} | Default Role: {default_role} | "
-                f"Default Department: {default_department}"
+                f"Category: {category} | "
+                f"Default Role: {template.get('target_role', 'all')} | "
+                f"Default Department: {template.get('target_department', 'All Departments')}"
             )
             st.write(message)
 
             if st.button(f"Send Template {idx + 1}", key=f"send_template_{idx}"):
-                final_target_role = selected_target_role or default_role
-                final_target_department = selected_target_department or default_department
-                final_priority = selected_priority or default_priority
-
                 result = send_message_api(
                     sender_name=sender_name,
                     sender_role=sender_role,
-                    target_role=final_target_role,
-                    target_department=final_target_department,
+                    target_role=selected_target_role,
+                    target_department=selected_target_department,
+                    category=category,
                     title=title,
                     message=message,
-                    priority=final_priority,
-                    category=category,
+                    priority=selected_priority,
                 )
 
                 if result and result.get("status") == "sent":
@@ -154,10 +165,10 @@ def show_admin_message_center(sender_name: str, sender_role: str):
                 sender_role=sender_role,
                 target_role=selected_target_role,
                 target_department=selected_target_department,
+                category=custom_type,
                 title=custom_title.strip(),
                 message=custom_message.strip(),
                 priority=selected_priority,
-                category=custom_type,
             )
 
             if result and result.get("status") == "sent":
@@ -169,8 +180,7 @@ def show_admin_message_center(sender_name: str, sender_role: str):
     st.markdown("---")
     st.markdown("### Recently Sent Messages")
 
-    # IMPORTANT: no role filter here -> admin should see all sent messages
-    sent_data = _safe_messages_response(role=None, department=None, limit=50)
+    sent_data = _safe_messages_response(role=None, department=None, limit=20)
     sent_messages = sent_data["messages"]
 
     if not sent_messages:
@@ -195,13 +205,7 @@ def show_admin_message_center(sender_name: str, sender_role: str):
             f"Status: {status} | Time: {timestamp}"
         )
 
-        reply_text = msg.get("reply", "")
-        replied_by = msg.get("reply_by", "")
-        replied_at = msg.get("reply_timestamp", "")
-
-        if str(reply_text).strip():
-            st.success(f"Reply: {reply_text}")
-            st.caption(f"By: {replied_by} | At: {replied_at}")
+        _reply_block(msg)
 
         if i < len(sent_messages) - 1:
             st.markdown("---")
@@ -226,20 +230,16 @@ def show_staff_message_center(user_name: str, role: str, department: str):
         sender_name = msg.get("sender_name", "")
         sender_role = msg.get("sender_role", "")
         timestamp = msg.get("timestamp", "")
-        reply_text = msg.get("reply", "")
-        replied_by = msg.get("reply_by", "")
-        replied_at = msg.get("reply_timestamp", "")
 
         st.markdown(f"### {title}")
         _priority_badge(priority)
         st.write(message)
-        st.caption(
-            f"From: {sender_name} ({sender_role}) | Time: {timestamp}"
-        )
+        st.caption(f"From: {sender_name} ({sender_role}) | Time: {timestamp}")
 
-        if str(reply_text).strip():
-            st.success(f"Current Reply: {reply_text}")
-            st.caption(f"By: {replied_by} | At: {replied_at}")
+        reply_value = str(msg.get("reply", "")).strip()
+
+        if reply_value:
+            _reply_block(msg)
         else:
             st.markdown("#### Quick Replies")
 
@@ -248,10 +248,7 @@ def show_staff_message_center(user_name: str, role: str, department: str):
                 for q_idx, reply in enumerate(quick_replies):
                     col = cols[q_idx % 4]
                     with col:
-                        if st.button(
-                            reply,
-                            key=f"quick_reply_{message_id}_{q_idx}",
-                        ):
+                        if st.button(reply, key=f"quick_reply_{message_id}_{q_idx}"):
                             result = send_quick_reply_api(
                                 message_id=message_id,
                                 reply_text=reply,
@@ -269,10 +266,7 @@ def show_staff_message_center(user_name: str, role: str, department: str):
                 key=f"custom_reply_input_{message_id}",
             )
 
-            if st.button(
-                "Send Custom Reply",
-                key=f"send_custom_reply_{message_id}",
-            ):
+            if st.button("Send Custom Reply", key=f"send_custom_reply_{message_id}"):
                 if not custom_reply.strip():
                     st.warning("Please enter a reply first.")
                 else:

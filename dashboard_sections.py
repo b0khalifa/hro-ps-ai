@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -5,6 +6,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from api_client import get_prediction, simulate, explain_prediction, get_optimization
+from forecast_runtime import generate_multistep_forecast
+from evaluation_service import build_metrics_dataframe, build_detailed_predictions_dataframe
 
 
 def show_resource_optimization_panel(prediction):
@@ -62,7 +65,7 @@ def show_resource_optimization_panel(prediction):
         x="department",
         y="priority_score",
         color="status",
-        title="Priority Score by Department"
+        title="Priority Score by Department",
     )
     fig_priority.update_layout(height=400)
     st.plotly_chart(fig_priority, use_container_width=True)
@@ -77,7 +80,7 @@ def show_resource_optimization_panel(prediction):
         x="department",
         y=["bed_shortage", "doctor_shortage", "nurse_shortage"],
         barmode="group",
-        title="Shortage Overview by Department"
+        title="Shortage Overview by Department",
     )
     fig_shortage.update_layout(height=420)
     st.plotly_chart(fig_shortage, use_container_width=True)
@@ -91,7 +94,6 @@ def show_top_kpis(current_patients, prediction, peak, emergency_level, beds, doc
     st.markdown("## 🏥 System Overview")
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
-
     c1.metric("Current Patients", int(current_patients))
     c2.metric("Next Hour", int(prediction))
     c3.metric("Peak Load", int(peak))
@@ -103,21 +105,11 @@ def show_top_kpis(current_patients, prediction, peak, emergency_level, beds, doc
 def show_forecast_panel(df, last_sequence):
     st.markdown("## 📈 Forecast & Demand Analysis")
 
-    predictions = []
-    sequence = last_sequence.copy()
-
-    for _ in range(24):
-        result = get_prediction(sequence)
-
-        if result is None or "predicted_patients_next_hour" not in result:
-            break
-
-        pred = float(result["predicted_patients_next_hour"])
-        predictions.append(pred)
-
-        new_row = sequence[-1].copy()
-        new_row[0] = pred
-        sequence = np.vstack([sequence[1:], new_row])
+    predictions = generate_multistep_forecast(
+        last_sequence=last_sequence,
+        predict_fn=get_prediction,
+        steps=24,
+    )
 
     if len(predictions) == 0:
         st.warning("Forecast unavailable")
@@ -125,7 +117,7 @@ def show_forecast_panel(df, last_sequence):
 
     forecast_df = pd.DataFrame({
         "hour": range(1, len(predictions) + 1),
-        "forecast": predictions
+        "forecast": predictions,
     })
 
     col1, col2 = st.columns(2)
@@ -139,13 +131,13 @@ def show_forecast_panel(df, last_sequence):
             hist_df,
             x="time_index",
             y="patients",
-            title="Historical Patients"
+            title="Historical Patients",
         )
         fig_hist.update_layout(
             height=350,
             xaxis_title="Time Index",
             yaxis_title="Patients",
-            margin=dict(l=20, r=20, t=50, b=20)
+            margin=dict(l=20, r=20, t=50, b=20),
         )
         st.plotly_chart(fig_hist, use_container_width=True)
 
@@ -156,13 +148,13 @@ def show_forecast_panel(df, last_sequence):
             x="hour",
             y="forecast",
             markers=True,
-            title="Predicted Patient Demand"
+            title="Predicted Patient Demand",
         )
         fig_forecast.update_layout(
             height=350,
             xaxis_title="Next Hours",
             yaxis_title="Predicted Patients",
-            margin=dict(l=20, r=20, t=50, b=20)
+            margin=dict(l=20, r=20, t=50, b=20),
         )
         st.plotly_chart(fig_forecast, use_container_width=True)
 
@@ -177,7 +169,7 @@ def show_forecast_panel(df, last_sequence):
 
     compare_df = pd.DataFrame({
         "Actual": actual,
-        "Forecast": forecast_vals
+        "Forecast": forecast_vals,
     })
 
     fig_compare = px.line(compare_df, title="Actual vs Forecast")
@@ -185,7 +177,7 @@ def show_forecast_panel(df, last_sequence):
         height=350,
         xaxis_title="Time Window",
         yaxis_title="Patients",
-        margin=dict(l=20, r=20, t=50, b=20)
+        margin=dict(l=20, r=20, t=50, b=20),
     )
     st.plotly_chart(fig_compare, use_container_width=True)
 
@@ -215,14 +207,14 @@ def show_capacity_panel(resources, emergency_level):
                 "steps": [
                     {"range": [0, 60], "color": "#d9f2d9"},
                     {"range": [60, 80], "color": "#fff3cd"},
-                    {"range": [80, 100], "color": "#f8d7da"}
+                    {"range": [80, 100], "color": "#f8d7da"},
                 ],
                 "threshold": {
                     "line": {"width": 4},
                     "thickness": 0.75,
-                    "value": 85
-                }
-            }
+                    "value": 85,
+                },
+            },
         ))
 
         fig.update_layout(height=350, margin=dict(l=20, r=20, t=60, b=20))
@@ -304,7 +296,10 @@ def show_operations_panel(prediction):
 
         schedule = pd.DataFrame({
             "Room": [f"OR-{i+1}" for i in range(rooms)],
-            "Surgeries": [surgeries // rooms + (1 if i < surgeries % rooms else 0) for i in range(rooms)]
+            "Surgeries": [
+                surgeries // rooms + (1 if i < surgeries % rooms else 0)
+                for i in range(rooms)
+            ],
         })
 
         st.dataframe(schedule, use_container_width=True, hide_index=True)
@@ -318,19 +313,16 @@ def show_operations_panel(prediction):
 
         opt_df = pd.DataFrame({
             "Resource": ["Doctors", "Nurses", "Beds"],
-            "Recommended": [doctors, nurses, beds]
+            "Recommended": [doctors, nurses, beds],
         })
 
         fig_bar = px.bar(
             opt_df,
             x="Resource",
             y="Recommended",
-            title="Recommended Resources"
+            title="Recommended Resources",
         )
-        fig_bar.update_layout(
-            height=350,
-            margin=dict(l=20, r=20, t=50, b=20)
-        )
+        fig_bar.update_layout(height=350, margin=dict(l=20, r=20, t=50, b=20))
         st.plotly_chart(fig_bar, use_container_width=True)
 
 
@@ -345,8 +337,8 @@ def show_hospital_map_panel(prediction):
             int(prediction * 0.10),
             int(prediction * 0.45),
             int(prediction * 0.10),
-            int(prediction * 0.05)
-        ]
+            int(prediction * 0.05),
+        ],
     })
 
     hospital_map["Available"] = hospital_map["Capacity"] - hospital_map["Occupied"]
@@ -358,12 +350,9 @@ def show_hospital_map_panel(prediction):
         x="Department",
         y=["Capacity", "Occupied", "Available"],
         barmode="group",
-        title="Department Capacity Overview"
+        title="Department Capacity Overview",
     )
-    fig_dept.update_layout(
-        height=400,
-        margin=dict(l=20, r=20, t=50, b=20)
-    )
+    fig_dept.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
     st.plotly_chart(fig_dept, use_container_width=True)
 
 
@@ -375,7 +364,7 @@ def show_heatmap(df):
         values="patients",
         index="day_of_week",
         columns="month",
-        aggfunc="mean"
+        aggfunc="mean",
     )
 
     day_labels = {
@@ -385,7 +374,7 @@ def show_heatmap(df):
         3: "Thu",
         4: "Fri",
         5: "Sat",
-        6: "Sun"
+        6: "Sun",
     }
 
     heatmap_data = heatmap_data.rename(index=day_labels)
@@ -398,14 +387,14 @@ def show_heatmap(df):
         color_continuous_scale=[
             [0.0, "green"],
             [0.5, "yellow"],
-            [1.0, "red"]
-        ]
+            [1.0, "red"],
+        ],
     )
 
     fig.update_layout(
         height=450,
         margin=dict(l=20, r=20, t=50, b=20),
-        coloraxis_colorbar=dict(title="Load")
+        coloraxis_colorbar=dict(title="Load"),
     )
 
     st.plotly_chart(fig, use_container_width=True)
@@ -433,29 +422,17 @@ def show_explainability_panel(last_sequence):
         impact_df,
         x="feature",
         y="impact",
-        title="Feature Influence on Forecast",
-        text="impact"
+        title="Feature Impact on Prediction",
     )
-    fig.update_layout(
-        height=400,
-        xaxis_title="Feature",
-        yaxis_title="Prediction Impact",
-        margin=dict(l=20, r=20, t=50, b=20)
-    )
-
+    fig.update_layout(height=420, margin=dict(l=20, r=20, t=50, b=20))
     st.plotly_chart(fig, use_container_width=True)
 
-    st.write("### Clinical Interpretation")
-    for row in impacts:
-        feature = row["feature"]
-        impact = row["impact"]
-
-        if impact > 0:
-            st.write(f"- **{feature}** increases predicted patient demand by approximately **{impact:.2f}**.")
-        elif impact < 0:
-            st.write(f"- **{feature}** decreases predicted patient demand by approximately **{abs(impact):.2f}**.")
-        else:
-            st.write(f"- **{feature}** has negligible effect on the current prediction.")
+    st.write("### Ranked Feature Impacts")
+    st.dataframe(
+        impact_df.sort_values(by="abs_impact", ascending=False),
+        use_container_width=True,
+        hide_index=True,
+    )
 
 
 def show_hybrid_model_panel(last_sequence):
@@ -463,57 +440,59 @@ def show_hybrid_model_panel(last_sequence):
 
     result = get_prediction(last_sequence)
 
-    if result is None:
-        st.warning("Hybrid forecast service unavailable.")
+    if not result:
+        st.warning("Prediction API unavailable.")
         return
 
-    lstm_pred = float(result.get("lstm_prediction", 0))
-    arimax_pred = float(result.get("arimax_prediction", 0))
-    hybrid_pred = float(result.get("hybrid_prediction", result.get("predicted_patients_next_hour", 0)))
-
-    weights = result.get("hybrid_weights", {})
-    lstm_weight = weights.get("lstm", "N/A")
-    arimax_weight = weights.get("arimax", "N/A")
-
     c1, c2, c3 = st.columns(3)
-    c1.metric("LSTM Prediction", int(lstm_pred))
-    c2.metric("ARIMAX Prediction", int(arimax_pred))
-    c3.metric("Hybrid Prediction", int(hybrid_pred))
+    c1.metric("LSTM Prediction", round(float(result.get("lstm_prediction", 0)), 2))
+    c2.metric("ARIMAX Prediction", round(float(result.get("arimax_prediction", 0)), 2))
+    c3.metric("Hybrid Prediction", round(float(result.get("hybrid_prediction", 0)), 2))
 
-    st.caption(f"Hybrid Weights → LSTM: {lstm_weight} | ARIMAX: {arimax_weight}")
-
-    compare_df = pd.DataFrame({
-        "Model": ["LSTM", "ARIMAX", "Hybrid"],
-        "Prediction": [lstm_pred, arimax_pred, hybrid_pred]
+    weight_df = pd.DataFrame({
+        "Model": ["LSTM", "ARIMAX"],
+        "Weight": [
+            float(result.get("lstm_weight", 0)),
+            float(result.get("arimax_weight", 0)),
+        ],
     })
 
     fig = px.bar(
-        compare_df,
+        weight_df,
         x="Model",
-        y="Prediction",
-        title="Hybrid Forecast Comparison"
+        y="Weight",
+        title="Hybrid Weight Distribution",
     )
-    fig.update_layout(height=350)
+    fig.update_layout(height=350, margin=dict(l=20, r=20, t=50, b=20))
     st.plotly_chart(fig, use_container_width=True)
 
 
 def show_forecast_evaluation_panel():
     st.markdown("## 📏 Forecast Evaluation Panel")
 
-    try:
-        eval_df = pd.read_csv("forecast_evaluation.csv")
-        detailed_df = pd.read_csv("forecast_predictions_detailed.csv")
-    except FileNotFoundError:
-        st.warning("Evaluation files not found. Run evaluate_forecast.py first.")
+    split = st.radio(
+        "Evaluation Split",
+        ["test", "validation"],
+        horizontal=True,
+        key="eval_split_selector",
+    )
+
+    eval_df = build_metrics_dataframe(split=split)
+    detailed_df = build_detailed_predictions_dataframe(split=split)
+
+    if eval_df.empty:
+        st.warning("Evaluation files not found. Run the v2 training pipeline first.")
         return
 
     st.write("### Model Performance Comparison")
-    st.dataframe(eval_df, use_container_width=True, hide_index=True)
+    st.dataframe(eval_df.round(4), use_container_width=True, hide_index=True)
 
     best_model_row = eval_df.sort_values("RMSE", ascending=True).iloc[0]
     st.success(
         f"Best model currently: **{best_model_row['Model']}** "
-        f"(RMSE = {best_model_row['RMSE']}, MAE = {best_model_row['MAE']}, MAPE = {best_model_row['MAPE']}%)"
+        f"(RMSE = {best_model_row['RMSE']:.4f}, "
+        f"MAE = {best_model_row['MAE']:.4f}, "
+        f"MAPE = {best_model_row['MAPE']:.2f}%)"
     )
 
     fig_metrics = px.bar(
@@ -521,13 +500,13 @@ def show_forecast_evaluation_panel():
         x="Model",
         y=["MAE", "RMSE", "MAPE"],
         barmode="group",
-        title="Forecast Error Metrics"
+        title="Forecast Error Metrics",
     )
     fig_metrics.update_layout(height=420, margin=dict(l=20, r=20, t=50, b=20))
     st.plotly_chart(fig_metrics, use_container_width=True)
 
     required_cols = ["time_index", "actual", "lstm_pred", "arimax_pred", "hybrid_pred"]
-    if all(col in detailed_df.columns for col in required_cols):
+    if not detailed_df.empty and all(col in detailed_df.columns for col in required_cols):
         st.write("### Actual vs Predicted")
         compare_df = detailed_df[required_cols].copy()
 
@@ -535,7 +514,7 @@ def show_forecast_evaluation_panel():
             compare_df,
             x="time_index",
             y=["actual", "lstm_pred", "arimax_pred", "hybrid_pred"],
-            title="Actual vs Forecasted Patient Flow"
+            title="Actual vs Forecasted Patient Flow",
         )
         fig_compare.update_layout(height=450, margin=dict(l=20, r=20, t=50, b=20))
         st.plotly_chart(fig_compare, use_container_width=True)
@@ -543,4 +522,4 @@ def show_forecast_evaluation_panel():
         st.write("### Detailed Predictions")
         st.dataframe(compare_df.tail(50), use_container_width=True, hide_index=True)
     else:
-        st.warning("Detailed prediction columns not found in forecast_predictions_detailed.csv.")
+        st.warning("Detailed evaluation outputs are not available yet.")
