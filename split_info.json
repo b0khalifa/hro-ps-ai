@@ -1,4 +1,5 @@
 {
+  "input_file": "engineered_data.csv",
   "sequence_length": 24,
   "feature_columns": [
     "patients",
@@ -6,17 +7,48 @@
     "month",
     "is_weekend",
     "holiday",
-    "weather"
+    "weather",
+    "hour",
+    "hour_sin",
+    "hour_cos",
+    "patients_lag_1",
+    "patients_lag_2",
+    "patients_lag_3",
+    "patients_lag_6",
+    "patients_lag_12",
+    "patients_lag_24",
+    "patients_roll_mean_3",
+    "patients_roll_mean_6",
+    "patients_roll_mean_12",
+    "patients_roll_mean_24",
+    "patients_roll_std_3",
+    "patients_roll_std_6",
+    "patients_roll_std_12",
+    "patients_roll_std_24",
+    "patients_diff_1",
+    "patients_diff_24",
+    "trend_feature"
   ],
   "target_column": "patients",
-  "train_ratio": 0.7,
-  "val_ratio": 0.15,
-  "test_ratio": 0.15,
-  "total_rows_after_cleaning": 3000,
-  "total_sequences": 2976,
-  "train_sequences": 2083,
-  "val_sequences": 446,
-  "test_sequences": 447,
-  "train_end_sequence_index": 2083,
-  "val_end_sequence_index": 2529
+  "total_rows_after_engineering": 2976,
+  "train_rows": 2083,
+  "val_rows": 446,
+  "test_rows": 447,
+  "train_end_index": 2083,
+  "val_end_index": 2529,
+  "X_train_shape": [
+    2059,
+    24,
+    26
+  ],
+  "X_val_shape": [
+    422,
+    24,
+    26
+  ],
+  "X_test_shape": [
+    423,
+    24,
+    26
+  ]
 }

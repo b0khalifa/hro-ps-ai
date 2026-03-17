@@ -1,24 +1,24 @@
 {
   "model": "ARIMAX",
-  "order": [
-    2,
-    1,
-    2
-  ],
-  "seasonal_order": [
-    0,
-    0,
-    0,
-    0
-  ],
-  "validation": {
-    "mae": 19.34535954511385,
-    "rmse": 22.622799670756955,
-    "mape": 53.11319943671447
+  "val_metrics": {
+    "mae": 18.69476273374442,
+    "rmse": 21.635609802108643,
+    "mape": 47.75656775006604
   },
-  "test": {
-    "mae": 17.360977013909537,
-    "rmse": 20.15157829788163,
-    "mape": 41.37154578010146
-  }
+  "test_metrics": {
+    "mae": 17.369339567326232,
+    "rmse": 20.110797665446984,
+    "mape": 37.92470319740799
+  },
+  "exog_columns": [
+    "day_of_week",
+    "month",
+    "is_weekend",
+    "holiday",
+    "weather",
+    "hour",
+    "hour_sin",
+    "hour_cos",
+    "trend_feature"
+  ]
 }
