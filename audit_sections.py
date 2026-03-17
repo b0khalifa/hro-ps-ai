@@ -1,33 +1,46 @@
-import os
-import pandas as pd
 import streamlit as st
+import pandas as pd
 
-LOG_FILE = "recommendation_log.csv"
+from database import SessionLocal
+from models import AuditEvent
+
 
 EXPECTED_COLS = [
-    "recommendation_id",
+    "audit_id",
     "timestamp",
-    "type",
-    "message",
+    "action",
+    "actor",
+    "target",
     "status",
-    "approved_by",
-    "execution_status",
-    "execution_note",
-    "affected_files"
+    "details",
 ]
 
 
 def load_audit_log():
-    if not os.path.exists(LOG_FILE):
-        return pd.DataFrame(columns=EXPECTED_COLS)
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(AuditEvent)
+            .order_by(AuditEvent.id.desc())
+            .all()
+        )
 
-    df = pd.read_csv(LOG_FILE)
+        data = [
+            {
+                "audit_id": str(row.audit_id or "").strip(),
+                "timestamp": str(row.timestamp or "").strip(),
+                "action": str(row.action or "").strip(),
+                "actor": str(row.actor or "").strip(),
+                "target": str(row.target or "").strip(),
+                "status": str(row.status or "").strip(),
+                "details": str(row.details or "").strip(),
+            }
+            for row in rows
+        ]
 
-    for col in EXPECTED_COLS:
-        if col not in df.columns:
-            df[col] = ""
-
-    return df[EXPECTED_COLS].copy()
+        return pd.DataFrame(data, columns=EXPECTED_COLS)
+    finally:
+        db.close()
 
 
 def show_audit_summary():
@@ -40,19 +53,19 @@ def show_audit_summary():
         return
 
     total = len(df)
-    approved = len(df[df["status"] == "approved"])
-    rejected = len(df[df["status"] == "rejected"])
-    executed = len(df[df["execution_status"] == "executed"])
+    success = len(df[df["status"].str.lower() == "success"])
+    failed = len(df[df["status"].str.lower() == "failed"])
+    approve_actions = len(df[df["action"].str.contains("approve", case=False, na=False)])
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Decisions", total)
-    c2.metric("Approved", approved)
-    c3.metric("Rejected", rejected)
-    c4.metric("Executed", executed)
+    c1.metric("Total Audit Events", total)
+    c2.metric("Success", success)
+    c3.metric("Failed", failed)
+    c4.metric("Approve Actions", approve_actions)
 
 
 def show_audit_table():
-    st.markdown("## 📚 Decision Audit Log")
+    st.markdown("## 📚 Audit Event Log")
 
     df = load_audit_log()
 
@@ -73,19 +86,27 @@ def show_execution_trace():
         st.info("No execution trace available.")
         return
 
-    executed_df = df[df["execution_status"] == "executed"].copy()
+    execution_df = df[
+        df["action"].str.contains("approve|reject|reset|sync", case=False, na=False)
+    ].copy()
 
-    if executed_df.empty:
-        st.info("No executed decisions yet.")
+    if execution_df.empty:
+        st.info("No execution-related audit events yet.")
         return
 
-    executed_df = executed_df.sort_values(by="timestamp", ascending=False)
+    execution_df = execution_df.sort_values(by="timestamp", ascending=False)
 
-    for _, row in executed_df.iterrows():
-        st.success(f"{row['recommendation_id']} — {str(row['type']).upper()}")
-        st.write(f"**Message:** {row['message']}")
-        st.write(f"**Approved By:** {row['approved_by']}")
-        st.write(f"**Execution Note:** {row['execution_note']}")
-        st.write(f"**Affected Files:** {row['affected_files']}")
-        st.caption(f"Timestamp: {row['timestamp']}")
+    for _, row in execution_df.iterrows():
+        status = str(row["status"]).lower()
+
+        if status == "success":
+            st.success(f"{row['action']} — {row['target']}")
+        elif status == "failed":
+            st.error(f"{row['action']} — {row['target']}")
+        else:
+            st.info(f"{row['action']} — {row['target']}")
+
+        st.write(f"**Actor:** {row['actor']}")
+        st.write(f"**Details:** {row['details']}")
+        st.caption(f"Timestamp: {row['timestamp']} | Audit ID: {row['audit_id']}")
         st.markdown("---")

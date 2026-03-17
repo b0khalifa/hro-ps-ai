@@ -1,13 +1,22 @@
 import os
 from datetime import datetime, timedelta
+from typing import List, Tuple
 
 import pandas as pd
 import streamlit as st
+from sqlalchemy.orm import Session
 
-LOG_FILE = "recommendation_log.csv"
-SHIFTS_FILE = "shifts.csv"
-OR_FILE = "or_bookings.csv"
-APPOINTMENTS_FILE = "appointments.csv"
+from database import SessionLocal
+from models import (
+    Appointment,
+    ORBooking,
+    RecommendationRecord,
+    StaffShift,
+    AuditEvent,
+)
+
+
+LEGACY_RECOMMENDATION_FILE = "recommendation_log.csv"
 
 REQUIRED_LOG_COLS = [
     "recommendation_id",
@@ -18,54 +27,141 @@ REQUIRED_LOG_COLS = [
     "approved_by",
     "execution_status",
     "execution_note",
-    "affected_files"
+    "affected_files",
 ]
 
 
-# ========================================
-# HELPERS
-# ========================================
-def ensure_log_schema(df: pd.DataFrame) -> pd.DataFrame:
+def _now() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _normalize(value, default=""):
+    if value is None:
+        return default
+    text = str(value).strip()
+    return text if text else default
+
+
+def _safe_int(value, default=0):
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except Exception:
+        return default
+
+
+def _new_recommendation_id() -> str:
+    return f"REC-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+
+
+def _new_audit_id() -> str:
+    return f"AUD-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+
+
+def _record_audit(
+    db: Session,
+    action: str,
+    actor: str,
+    target: str,
+    status: str,
+    details: str,
+):
+    db.add(
+        AuditEvent(
+            audit_id=_new_audit_id(),
+            timestamp=_now(),
+            action=_normalize(action),
+            actor=_normalize(actor),
+            target=_normalize(target),
+            status=_normalize(status),
+            details=_normalize(details),
+        )
+    )
+
+
+def _bootstrap_recommendations_from_csv_if_needed(db: Session):
+    if db.query(RecommendationRecord).count() > 0:
+        return
+
+    if not os.path.exists(LEGACY_RECOMMENDATION_FILE):
+        return
+
+    try:
+        df = pd.read_csv(LEGACY_RECOMMENDATION_FILE)
+    except Exception:
+        return
+
+    if df.empty:
+        return
+
     for col in REQUIRED_LOG_COLS:
         if col not in df.columns:
             df[col] = ""
-    return df[REQUIRED_LOG_COLS].copy()
+
+    df = df[REQUIRED_LOG_COLS].copy()
+
+    for _, row in df.iterrows():
+        db.add(
+            RecommendationRecord(
+                recommendation_id=_normalize(row.get("recommendation_id"), _new_recommendation_id()),
+                timestamp=_normalize(row.get("timestamp"), _now()),
+                rec_type=_normalize(row.get("type"), "general"),
+                message=_normalize(row.get("message")),
+                status=_normalize(row.get("status"), "pending"),
+                approved_by=_normalize(row.get("approved_by")),
+                execution_status=_normalize(row.get("execution_status")),
+                execution_note=_normalize(row.get("execution_note")),
+                affected_entities=_normalize(row.get("affected_files")),
+            )
+        )
+    db.commit()
+
+
+def _recommendation_record_to_dict(row: RecommendationRecord) -> dict:
+    return {
+        "recommendation_id": _normalize(row.recommendation_id),
+        "timestamp": _normalize(row.timestamp),
+        "type": _normalize(row.rec_type),
+        "message": _normalize(row.message),
+        "status": _normalize(row.status),
+        "approved_by": _normalize(row.approved_by),
+        "execution_status": _normalize(row.execution_status),
+        "execution_note": _normalize(row.execution_note),
+        "affected_files": _normalize(row.affected_entities),
+    }
 
 
 def load_recommendations() -> pd.DataFrame:
-    if not os.path.exists(LOG_FILE):
-        df = pd.DataFrame(columns=REQUIRED_LOG_COLS)
-        df.to_csv(LOG_FILE, index=False)
-        return df
-
-    df = pd.read_csv(LOG_FILE)
-    return ensure_log_schema(df)
-
-
-def save_recommendations(df: pd.DataFrame):
-    df = ensure_log_schema(df)
-    df.to_csv(LOG_FILE, index=False)
+    db = SessionLocal()
+    try:
+        _bootstrap_recommendations_from_csv_if_needed(db)
+        rows = (
+            db.query(RecommendationRecord)
+            .order_by(RecommendationRecord.id.desc())
+            .all()
+        )
+        data = [_recommendation_record_to_dict(row) for row in rows]
+        return pd.DataFrame(data, columns=REQUIRED_LOG_COLS)
+    finally:
+        db.close()
 
 
 def reset_recommendations():
-    pd.DataFrame(columns=REQUIRED_LOG_COLS).to_csv(LOG_FILE, index=False)
-
-
-def load_csv_or_empty(path, columns):
-    if not os.path.exists(path):
-        df = pd.DataFrame(columns=columns)
-        df.to_csv(path, index=False)
-        return df
-
-    df = pd.read_csv(path)
-    for col in columns:
-        if col not in df.columns:
-            df[col] = ""
-    return df[columns].copy()
-
-
-def save_csv(df, path):
-    df.to_csv(path, index=False)
+    db = SessionLocal()
+    try:
+        db.query(RecommendationRecord).delete()
+        _record_audit(
+            db=db,
+            action="reset_recommendations",
+            actor="system",
+            target="recommendation_records",
+            status="success",
+            details="Recommendation records were reset.",
+        )
+        db.commit()
+    finally:
+        db.close()
 
 
 def infer_department_from_message(message: str):
@@ -84,38 +180,19 @@ def infer_department_from_message(message: str):
 
 
 def create_recommendation_row(rec_type: str, message: str):
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    rec_id = f"REC-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
     return {
-        "recommendation_id": rec_id,
-        "timestamp": ts,
+        "recommendation_id": _new_recommendation_id(),
+        "timestamp": _now(),
         "type": rec_type,
         "message": message,
         "status": "pending",
         "approved_by": "",
         "execution_status": "",
         "execution_note": "",
-        "affected_files": ""
+        "affected_files": "",
     }
 
 
-def add_recommendations_if_missing(df: pd.DataFrame, rows_to_add: list[dict]) -> pd.DataFrame:
-    existing_messages = set(df["message"].astype(str).tolist()) if not df.empty else set()
-
-    new_rows = []
-    for row in rows_to_add:
-        if row["message"] not in existing_messages:
-            new_rows.append(row)
-
-    if new_rows:
-        df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
-
-    return df
-
-
-# ========================================
-# RECOMMENDATION GENERATION
-# ========================================
 def generate_ai_recommendations(peak, beds_needed, doctors_needed, emergency_level):
     recommendations = []
 
@@ -146,165 +223,242 @@ def generate_ai_recommendations(peak, beds_needed, doctors_needed, emergency_lev
     return recommendations
 
 
-def sync_recommendations(peak, beds_needed, doctors_needed, emergency_level):
-    df = load_recommendations()
-    generated = generate_ai_recommendations(peak, beds_needed, doctors_needed, emergency_level)
-
-    pending_messages = set(
-        df[df["status"] == "pending"]["message"].astype(str).tolist()
-    ) if not df.empty else set()
-
-    rows = []
-    for rec in generated:
-        if rec["message"] not in pending_messages:
-            rows.append(create_recommendation_row(rec["type"], rec["message"]))
-
-    if rows:
-        df = pd.concat([df, pd.DataFrame(rows)], ignore_index=True)
-        save_recommendations(df)
-
-    return load_recommendations()
-
-
 def seed_demo_recommendations():
-    df = load_recommendations()
+    db = SessionLocal()
+    try:
+        _bootstrap_recommendations_from_csv_if_needed(db)
 
-    demo_rows = [
-        create_recommendation_row(
-            "capacity",
-            "Peak forecast reached 135 patients. Recommend opening overflow capacity."
-        ),
-        create_recommendation_row(
-            "beds",
-            "Beds needed = 145. Recommend reallocating beds or delaying non-urgent admissions."
-        ),
-        create_recommendation_row(
-            "staff",
-            "Doctors needed = 18. Recommend adding backup doctors to upcoming shifts."
-        ),
-        create_recommendation_row(
-            "emergency",
-            "Emergency load is HIGH. Recommend activating emergency surge plan."
-        ),
-    ]
+        existing_messages = {
+            _normalize(row.message)
+            for row in db.query(RecommendationRecord).all()
+        }
 
-    df = add_recommendations_if_missing(df, demo_rows)
-    save_recommendations(df)
+        demo_rows = [
+            create_recommendation_row(
+                "capacity",
+                "Peak forecast reached 135 patients. Recommend opening overflow capacity."
+            ),
+            create_recommendation_row(
+                "beds",
+                "Beds needed = 145. Recommend reallocating beds or delaying non-urgent admissions."
+            ),
+            create_recommendation_row(
+                "staff",
+                "Doctors needed = 18. Recommend adding backup doctors to upcoming shifts."
+            ),
+            create_recommendation_row(
+                "emergency",
+                "Emergency load is HIGH. Recommend activating emergency surge plan."
+            ),
+        ]
+
+        inserted = 0
+        for row in demo_rows:
+            if row["message"] in existing_messages:
+                continue
+
+            db.add(
+                RecommendationRecord(
+                    recommendation_id=row["recommendation_id"],
+                    timestamp=row["timestamp"],
+                    rec_type=row["type"],
+                    message=row["message"],
+                    status=row["status"],
+                    approved_by=row["approved_by"],
+                    execution_status=row["execution_status"],
+                    execution_note=row["execution_note"],
+                    affected_entities=row["affected_files"],
+                )
+            )
+            inserted += 1
+
+        _record_audit(
+            db=db,
+            action="seed_demo_recommendations",
+            actor="system",
+            target="recommendation_records",
+            status="success",
+            details=f"Inserted {inserted} demo recommendations.",
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+def sync_recommendations(peak, beds_needed, doctors_needed, emergency_level):
+    db = SessionLocal()
+    try:
+        _bootstrap_recommendations_from_csv_if_needed(db)
+
+        generated = generate_ai_recommendations(peak, beds_needed, doctors_needed, emergency_level)
+
+        pending_messages = {
+            _normalize(row.message)
+            for row in db.query(RecommendationRecord)
+            .filter(RecommendationRecord.status == "pending")
+            .all()
+        }
+
+        inserted = 0
+        for rec in generated:
+            if rec["message"] in pending_messages:
+                continue
+
+            row = create_recommendation_row(rec["type"], rec["message"])
+            db.add(
+                RecommendationRecord(
+                    recommendation_id=row["recommendation_id"],
+                    timestamp=row["timestamp"],
+                    rec_type=row["type"],
+                    message=row["message"],
+                    status=row["status"],
+                    approved_by=row["approved_by"],
+                    execution_status=row["execution_status"],
+                    execution_note=row["execution_note"],
+                    affected_entities=row["affected_files"],
+                )
+            )
+            inserted += 1
+
+        if inserted > 0:
+            _record_audit(
+                db=db,
+                action="sync_recommendations",
+                actor="system",
+                target="recommendation_records",
+                status="success",
+                details=f"Inserted {inserted} new AI recommendations.",
+            )
+
+        db.commit()
+
+        rows = (
+            db.query(RecommendationRecord)
+            .order_by(RecommendationRecord.id.desc())
+            .all()
+        )
+        return pd.DataFrame([_recommendation_record_to_dict(row) for row in rows], columns=REQUIRED_LOG_COLS)
+    finally:
+        db.close()
 
 
 # ========================================
-# EXECUTION LAYER
+# EXECUTION LAYER (DB-FIRST)
 # ========================================
-def execute_staff_decision(message):
-    shifts_cols = ["staff_username", "name", "role", "department", "shift_date", "shift_type", "status"]
-    shifts_df = load_csv_or_empty(SHIFTS_FILE, shifts_cols)
-
+def execute_staff_decision(db: Session, message: str) -> Tuple[str, str, str]:
     department = infer_department_from_message(message)
     next_day = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
 
-    new_shift = pd.DataFrame([{
-        "staff_username": "backup_doctor",
-        "name": "Backup Doctor",
-        "role": "doctor",
-        "department": department,
-        "shift_date": next_day,
-        "shift_type": "Emergency Backup",
-        "status": "Auto-Assigned"
-    }])
+    new_shift = StaffShift(
+        staff_username=f"backup_doctor_{department.lower().replace(' ', '_')}",
+        name="Backup Doctor",
+        role="doctor",
+        department=department,
+        shift_date=next_day,
+        shift_type="Emergency Backup",
+        status="Auto-Assigned",
+    )
+    db.add(new_shift)
 
-    shifts_df = pd.concat([shifts_df, new_shift], ignore_index=True)
-    save_csv(shifts_df, SHIFTS_FILE)
-
-    return "executed", f"Added backup doctor shift in {department} for {next_day}.", SHIFTS_FILE
-
-
-def execute_beds_decision(message):
-    appointments_cols = ["appointment_id", "department", "doctor", "date", "time_slot", "patient_count", "status"]
-    appointments_df = load_csv_or_empty(APPOINTMENTS_FILE, appointments_cols)
-
-    if appointments_df.empty:
-        return "skipped", "No appointments found to rebalance.", APPOINTMENTS_FILE
-
-    appointments_df["patient_count"] = pd.to_numeric(
-        appointments_df["patient_count"], errors="coerce"
-    ).fillna(0)
-
-    busiest_idx = appointments_df["patient_count"].idxmax()
-    appointments_df.loc[busiest_idx, "status"] = "Review Required"
-
-    save_csv(appointments_df, APPOINTMENTS_FILE)
-
-    row = appointments_df.loc[busiest_idx]
-    return "executed", f"Marked appointment slot {row['time_slot']} in {row['department']} as Review Required.", APPOINTMENTS_FILE
+    return (
+        "executed",
+        f"Added backup doctor shift in {department} for {next_day}.",
+        f"staff_shifts:{department}:{next_day}",
+    )
 
 
-def execute_capacity_decision(message):
-    appointments_cols = ["appointment_id", "department", "doctor", "date", "time_slot", "patient_count", "status"]
-    appointments_df = load_csv_or_empty(APPOINTMENTS_FILE, appointments_cols)
+def execute_beds_decision(db: Session, message: str) -> Tuple[str, str, str]:
+    appointments = db.query(Appointment).all()
+    if not appointments:
+        return "skipped", "No appointments found to rebalance.", "appointments"
 
-    if appointments_df.empty:
-        return "skipped", "No appointment slots available for capacity reallocation.", APPOINTMENTS_FILE
+    busiest = None
+    busiest_count = -1
 
-    appointments_df["patient_count"] = pd.to_numeric(
-        appointments_df["patient_count"], errors="coerce"
-    ).fillna(0)
+    for row in appointments:
+        count = _safe_int(row.patient_count, 0)
+        if count > busiest_count:
+            busiest_count = count
+            busiest = row
 
-    top_two = appointments_df.sort_values(by="patient_count", ascending=False).head(2).index
-    appointments_df.loc[top_two, "status"] = "Reschedule Suggested"
+    if busiest is None:
+        return "skipped", "No appointments found to rebalance.", "appointments"
 
-    save_csv(appointments_df, APPOINTMENTS_FILE)
+    busiest.status = "Review Required"
+    return (
+        "executed",
+        f"Marked appointment slot {busiest.time_slot} in {busiest.department} as Review Required.",
+        f"appointments:{_normalize(busiest.appointment_id)}",
+    )
 
-    return "executed", "Marked top pressure appointment slots as Reschedule Suggested.", APPOINTMENTS_FILE
+
+def execute_capacity_decision(db: Session, message: str) -> Tuple[str, str, str]:
+    appointments = db.query(Appointment).all()
+    if not appointments:
+        return "skipped", "No appointment slots available for capacity reallocation.", "appointments"
+
+    sorted_rows = sorted(
+        appointments,
+        key=lambda r: _safe_int(r.patient_count, 0),
+        reverse=True,
+    )
+
+    top_two = sorted_rows[:2]
+    if not top_two:
+        return "skipped", "No appointment slots available for capacity reallocation.", "appointments"
+
+    affected = []
+    for row in top_two:
+        row.status = "Reschedule Suggested"
+        affected.append(_normalize(row.appointment_id))
+
+    return (
+        "executed",
+        "Marked top pressure appointment slots as Reschedule Suggested.",
+        f"appointments:{', '.join(affected)}",
+    )
 
 
-def execute_emergency_decision(message):
-    or_cols = ["booking_id", "room", "doctor", "department", "date", "time_slot", "procedure", "status"]
-    appointments_cols = ["appointment_id", "department", "doctor", "date", "time_slot", "patient_count", "status"]
+def execute_emergency_decision(db: Session, message: str) -> Tuple[str, str, str]:
+    note_parts: List[str] = []
+    affected_entities: List[str] = []
 
-    or_df = load_csv_or_empty(OR_FILE, or_cols)
-    appt_df = load_csv_or_empty(APPOINTMENTS_FILE, appointments_cols)
+    or_rows = db.query(ORBooking).all()
+    pending_or_rows = [
+        row for row in or_rows
+        if _normalize(row.status).lower() == "pending"
+    ]
 
-    note_parts = []
-    affected_files = []
+    if pending_or_rows:
+        for row in pending_or_rows:
+            row.status = "Priority Review"
+            affected_entities.append(f"or:{_normalize(row.booking_id)}")
+        note_parts.append("Pending OR bookings escalated to Priority Review")
 
-    if not or_df.empty:
-        pending_mask = or_df["status"].astype(str).str.lower() == "pending"
-        if pending_mask.any():
-            or_df.loc[pending_mask, "status"] = "Priority Review"
-            save_csv(or_df, OR_FILE)
-            note_parts.append("Pending OR bookings escalated to Priority Review")
-            affected_files.append(OR_FILE)
-
-    if not appt_df.empty:
-        appt_df["patient_count"] = pd.to_numeric(
-            appt_df["patient_count"], errors="coerce"
-        ).fillna(0)
-
-        busiest_idx = appt_df["patient_count"].idxmax()
-        appt_df.loc[busiest_idx, "status"] = "Restricted Intake"
-        save_csv(appt_df, APPOINTMENTS_FILE)
-
-        row = appt_df.loc[busiest_idx]
+    appt_rows = db.query(Appointment).all()
+    if appt_rows:
+        busiest = max(appt_rows, key=lambda r: _safe_int(r.patient_count, 0))
+        busiest.status = "Restricted Intake"
+        affected_entities.append(f"appointments:{_normalize(busiest.appointment_id)}")
         note_parts.append(
-            f"Appointment slot {row['time_slot']} in {row['department']} set to Restricted Intake"
+            f"Appointment slot {busiest.time_slot} in {busiest.department} set to Restricted Intake"
         )
-        affected_files.append(APPOINTMENTS_FILE)
 
     if not note_parts:
         return "skipped", "No OR bookings or appointments available for emergency actions.", ""
 
-    return "executed", " | ".join(note_parts), ", ".join(affected_files)
+    return "executed", " | ".join(note_parts), ", ".join(affected_entities)
 
 
-def execute_decision(decision_type, message):
+def execute_decision(db: Session, decision_type: str, message: str):
     if decision_type == "staff":
-        return execute_staff_decision(message)
+        return execute_staff_decision(db, message)
     if decision_type == "beds":
-        return execute_beds_decision(message)
+        return execute_beds_decision(db, message)
     if decision_type == "capacity":
-        return execute_capacity_decision(message)
+        return execute_capacity_decision(db, message)
     if decision_type == "emergency":
-        return execute_emergency_decision(message)
+        return execute_emergency_decision(db, message)
 
     return "skipped", "No execution rule defined for this recommendation type.", ""
 
@@ -313,44 +467,89 @@ def execute_decision(decision_type, message):
 # APPROVE / REJECT
 # ========================================
 def approve_recommendation(recommendation_id, approver_name):
-    df = load_recommendations()
+    db = SessionLocal()
+    try:
+        _bootstrap_recommendations_from_csv_if_needed(db)
 
-    row_mask = df["recommendation_id"] == recommendation_id
-    if not row_mask.any():
+        row = (
+            db.query(RecommendationRecord)
+            .filter(RecommendationRecord.recommendation_id == recommendation_id)
+            .first()
+        )
+        if row is None:
+            return False
+
+        execution_status, execution_note, affected_entities = execute_decision(
+            db=db,
+            decision_type=_normalize(row.rec_type),
+            message=_normalize(row.message),
+        )
+
+        row.status = "approved"
+        row.approved_by = _normalize(approver_name)
+        row.execution_status = _normalize(execution_status)
+        row.execution_note = _normalize(execution_note)
+        row.affected_entities = _normalize(affected_entities)
+
+        _record_audit(
+            db=db,
+            action="approve_recommendation",
+            actor=_normalize(approver_name),
+            target=recommendation_id,
+            status="success",
+            details=(
+                f"Recommendation approved. "
+                f"Execution status={execution_status}. "
+                f"Affected={affected_entities or 'none'}."
+            ),
+        )
+
+        db.commit()
+        return True
+    except Exception as e:
+        db.rollback()
+        print("approve_recommendation error:", e)
         return False
-
-    row = df[row_mask].iloc[0]
-
-    execution_status, execution_note, affected_files = execute_decision(
-        decision_type=row["type"],
-        message=row["message"]
-    )
-
-    df.loc[row_mask, "status"] = "approved"
-    df.loc[row_mask, "approved_by"] = approver_name
-    df.loc[row_mask, "execution_status"] = execution_status
-    df.loc[row_mask, "execution_note"] = execution_note
-    df.loc[row_mask, "affected_files"] = affected_files
-
-    save_recommendations(df)
-    return True
+    finally:
+        db.close()
 
 
 def reject_recommendation(recommendation_id, approver_name):
-    df = load_recommendations()
+    db = SessionLocal()
+    try:
+        _bootstrap_recommendations_from_csv_if_needed(db)
 
-    row_mask = df["recommendation_id"] == recommendation_id
-    if not row_mask.any():
+        row = (
+            db.query(RecommendationRecord)
+            .filter(RecommendationRecord.recommendation_id == recommendation_id)
+            .first()
+        )
+        if row is None:
+            return False
+
+        row.status = "rejected"
+        row.approved_by = _normalize(approver_name)
+        row.execution_status = "not_executed"
+        row.execution_note = "Recommendation rejected by manager."
+        row.affected_entities = ""
+
+        _record_audit(
+            db=db,
+            action="reject_recommendation",
+            actor=_normalize(approver_name),
+            target=recommendation_id,
+            status="success",
+            details="Recommendation rejected by manager.",
+        )
+
+        db.commit()
+        return True
+    except Exception as e:
+        db.rollback()
+        print("reject_recommendation error:", e)
         return False
-
-    df.loc[row_mask, "status"] = "rejected"
-    df.loc[row_mask, "approved_by"] = approver_name
-    df.loc[row_mask, "execution_status"] = "not_executed"
-    df.loc[row_mask, "execution_note"] = "Recommendation rejected by manager."
-    df.loc[row_mask, "affected_files"] = ""
-
-    save_recommendations(df)
-    return True
+    finally:
+        db.close()
 
 
 # ========================================
@@ -432,16 +631,12 @@ def show_admin_approval_panel(peak, beds_needed, doctors_needed, emergency_level
 
             st.markdown("---")
 
-    st.write("### Approved Decisions")
-    if approved_df.empty:
-        st.info("No approved decisions yet.")
-    else:
-        approved_df = approved_df.sort_values(by="timestamp", ascending=False)
-        st.dataframe(approved_df, use_container_width=True, hide_index=True)
+    st.write("### Approved / Rejected Recommendations")
 
-    st.write("### Rejected Decisions")
-    if rejected_df.empty:
-        st.info("No rejected decisions yet.")
+    history_df = pd.concat([approved_df, rejected_df], ignore_index=True)
+
+    if history_df.empty:
+        st.info("No processed recommendations yet.")
     else:
-        rejected_df = rejected_df.sort_values(by="timestamp", ascending=False)
-        st.dataframe(rejected_df, use_container_width=True, hide_index=True)
+        history_df = history_df.sort_values(by="timestamp", ascending=False)
+        st.dataframe(history_df, use_container_width=True, hide_index=True)

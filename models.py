@@ -66,30 +66,6 @@ class User(Base):
     password = Column(String, nullable=False)
 
 
-class RecommendationLog(Base):
-    __tablename__ = "recommendation_log"
-
-    id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(String, nullable=True)
-    department = Column(String, nullable=True)
-    recommendation = Column(Text, nullable=True)
-    status = Column(String, nullable=True)
-    approver = Column(String, nullable=True)
-    execution_status = Column(String, nullable=True)
-
-
-class AuditLog(Base):
-    __tablename__ = "audit_log"
-
-    id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(String, nullable=True)
-    action = Column(String, nullable=True)
-    actor = Column(String, nullable=True)
-    target = Column(String, nullable=True)
-    status = Column(String, nullable=True)
-    details = Column(Text, nullable=True)
-
-
 class MessageLog(Base):
     __tablename__ = "message_log"
 
@@ -115,3 +91,31 @@ class MessageLog(Base):
     reply_timestamp = Column(String, nullable=True)
 
     acknowledged = Column(String, nullable=False, default="no")
+
+
+class RecommendationRecord(Base):
+    __tablename__ = "recommendation_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    recommendation_id = Column(String, unique=True, nullable=False, index=True)
+    timestamp = Column(String, nullable=False)
+    rec_type = Column(String, nullable=False)
+    message = Column(Text, nullable=False)
+    status = Column(String, nullable=False, default="pending")
+    approved_by = Column(String, nullable=True)
+    execution_status = Column(String, nullable=True)
+    execution_note = Column(Text, nullable=True)
+    affected_entities = Column(Text, nullable=True)
+
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    audit_id = Column(String, unique=True, nullable=False, index=True)
+    timestamp = Column(String, nullable=False)
+    action = Column(String, nullable=False)
+    actor = Column(String, nullable=True)
+    target = Column(String, nullable=True)
+    status = Column(String, nullable=False)
+    details = Column(Text, nullable=True)
