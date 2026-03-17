@@ -19,12 +19,9 @@ from schemas import LoginRequest
 
 app = FastAPI(title="Hospital AI API")
 
-
-# ========================================
-# FILES
-# ========================================
 MESSAGES_FILE = "messages_log.csv"
 ENGINEERED_FILE = "engineered_data.csv"
+SEQUENCE_LENGTH = 24
 
 MESSAGE_COLS = [
     "message_id",
@@ -44,10 +41,6 @@ MESSAGE_COLS = [
     "acknowledged",
 ]
 
-
-# ========================================
-# LOAD MODELS + ARTIFACTS
-# ========================================
 lstm_model = load_model("hospital_forecast_model.keras", compile=False)
 arimax_model = joblib.load("arimax_model.pkl")
 x_scaler = joblib.load("x_scaler.pkl")
@@ -58,58 +51,6 @@ with open("hybrid_config.json", "r", encoding="utf-8") as f:
 
 HYBRID_LSTM_WEIGHT = float(hybrid_config.get("lstm_weight", 0.9))
 HYBRID_ARIMAX_WEIGHT = float(hybrid_config.get("arimax_weight", 0.1))
-SEQUENCE_LENGTH = 24
-
-
-# ========================================
-# FEATURE CONFIG
-# ========================================
-def load_feature_columns() -> List[str]:
-    """
-    المصدر الصحيح للـ feature columns هو x_scaler نفسه
-    لأنه اتدرّب على نفس الأعمدة والترتيب الصحيح.
-    """
-    if hasattr(x_scaler, "feature_names_in_"):
-        cols = list(x_scaler.feature_names_in_)
-        if len(cols) > 0:
-            return cols
-
-    # fallback فقط لو scaler محفوظ بدون أسماء
-    if os.path.exists(ENGINEERED_FILE):
-        df = pd.read_csv(ENGINEERED_FILE)
-
-        excluded = {
-            "datetime",
-            "date",
-            "timestamp",
-            "target",
-            "y",
-            "split",
-            "set",
-        }
-
-        numeric_cols = []
-        for col in df.columns:
-            if col in excluded:
-                continue
-
-            series = pd.to_numeric(df[col], errors="coerce")
-            if series.notna().sum() > 0:
-                numeric_cols.append(col)
-
-        expected_n = int(getattr(x_scaler, "n_features_in_", 0))
-        if expected_n > 0:
-            if "patients" in numeric_cols:
-                numeric_cols = ["patients"] + [c for c in numeric_cols if c != "patients"]
-            return numeric_cols[:expected_n]
-
-    raise ValueError("Could not determine exact feature columns used by scaler.")
-
-
-FEATURE_COLUMNS = load_feature_columns()
-FEATURE_COUNT = len(FEATURE_COLUMNS)
-FEATURE_NAMES = FEATURE_COLUMNS.copy()
-
 
 ADMIN_MESSAGE_TEMPLATES = [
     {
@@ -166,9 +107,18 @@ STAFF_QUICK_REPLIES = [
 ]
 
 
-# ========================================
-# REQUEST MODELS
-# ========================================
+def load_feature_columns() -> List[str]:
+    if hasattr(x_scaler, "feature_names_in_"):
+        cols = list(x_scaler.feature_names_in_)
+        if cols:
+            return cols
+    raise ValueError("x_scaler.pkl does not contain feature names. Re-run prepare_sequences_v2.py")
+
+FEATURE_COLUMNS = load_feature_columns()
+FEATURE_COUNT = len(FEATURE_COLUMNS)
+FEATURE_NAMES = FEATURE_COLUMNS.copy()
+
+
 class PredictRequest(BaseModel):
     sequence: List[List[float]]
 
@@ -201,9 +151,6 @@ class ReplyMessageRequest(BaseModel):
     reply_by: str
 
 
-# ========================================
-# MESSAGE HELPERS
-# ========================================
 def ensure_messages_file():
     if not os.path.exists(MESSAGES_FILE):
         pd.DataFrame(columns=MESSAGE_COLS).to_csv(MESSAGES_FILE, index=False)
@@ -212,11 +159,9 @@ def ensure_messages_file():
 def load_messages_df() -> pd.DataFrame:
     ensure_messages_file()
     df = pd.read_csv(MESSAGES_FILE)
-
     for col in MESSAGE_COLS:
         if col not in df.columns:
             df[col] = ""
-
     return df[MESSAGE_COLS].copy()
 
 
@@ -227,9 +172,6 @@ def save_messages_df(df: pd.DataFrame):
     df[MESSAGE_COLS].to_csv(MESSAGES_FILE, index=False)
 
 
-# ========================================
-# MODEL HELPERS
-# ========================================
 def validate_sequence_shape(arr: np.ndarray):
     return arr.shape == (SEQUENCE_LENGTH, FEATURE_COUNT)
 
@@ -246,24 +188,17 @@ def inverse_scale_target(pred_scaled: float):
 
 
 def get_next_exog_from_sequence(sequence_array: np.ndarray):
-    if FEATURE_COUNT < 2:
-        raise ValueError("Not enough features available for ARIMAX exogenous forecast.")
-
     last_row = sequence_array[-1]
     exog_cols = FEATURE_COLUMNS[1:]
     exog_values = last_row[1:]
-
-    exog_df = pd.DataFrame([exog_values], columns=exog_cols)
-    return exog_df
+    return pd.DataFrame([exog_values], columns=exog_cols)
 
 
 def predict_lstm(sequence_array: np.ndarray):
     scaled_sequence = scale_sequence(sequence_array)
     x_input = np.array([scaled_sequence], dtype=np.float32)
-
     pred_scaled = float(lstm_model.predict(x_input, verbose=0)[0][0])
-    pred_original = inverse_scale_target(pred_scaled)
-    return pred_original
+    return inverse_scale_target(pred_scaled)
 
 
 def predict_arimax(sequence_array: np.ndarray):
@@ -275,12 +210,10 @@ def predict_arimax(sequence_array: np.ndarray):
 def predict_hybrid(sequence_array: np.ndarray):
     lstm_pred = predict_lstm(sequence_array)
     arimax_pred = predict_arimax(sequence_array)
-
     hybrid_prediction = (
         HYBRID_LSTM_WEIGHT * lstm_pred
         + HYBRID_ARIMAX_WEIGHT * arimax_pred
     )
-
     return {
         "lstm_prediction": lstm_pred,
         "arimax_prediction": arimax_pred,
@@ -306,7 +239,6 @@ def allocate_beds(predicted_patients: int, available_beds: int):
             "beds_remaining": available_beds - predicted_patients,
             "shortage": 0,
         }
-
     shortage = predicted_patients - available_beds
     return {
         "status": "SHORTAGE",
@@ -319,12 +251,10 @@ def allocate_beds(predicted_patients: int, available_beds: int):
 def explain_feature_importance(sequence_array: np.ndarray):
     base_result = predict_hybrid(sequence_array)
     base_pred = float(base_result["hybrid_prediction"])
-
     impacts = []
 
     for i, feature_name in enumerate(FEATURE_NAMES):
         modified = sequence_array.copy()
-
         if feature_name == "patients":
             modified[-1, i] = modified[-1, i] * 1.10
         else:
@@ -332,24 +262,18 @@ def explain_feature_importance(sequence_array: np.ndarray):
 
         new_result = predict_hybrid(modified)
         new_pred = float(new_result["hybrid_prediction"])
-        impact = new_pred - base_pred
-
         impacts.append({
             "feature": feature_name,
-            "impact": impact,
+            "impact": new_pred - base_pred,
         })
 
     impacts = sorted(impacts, key=lambda x: abs(x["impact"]), reverse=True)
-
     return {
         "base_prediction": base_pred,
         "feature_impacts": impacts,
     }
 
 
-# ========================================
-# ROUTES
-# ========================================
 @app.get("/")
 def home():
     return {"message": "Hospital AI API is running"}
@@ -365,28 +289,18 @@ def system_status():
             "lstm": HYBRID_LSTM_WEIGHT,
             "arimax": HYBRID_ARIMAX_WEIGHT,
         },
-        "sequence_length": SEQUENCE_LENGTH,
         "feature_count": FEATURE_COUNT,
-    }
-
-
-@app.get("/feature_config")
-def get_feature_config():
-    return {
         "sequence_length": SEQUENCE_LENGTH,
-        "feature_count": FEATURE_COUNT,
-        "feature_columns": FEATURE_COLUMNS,
     }
 
 
 @app.get("/debug/predict_info")
 def debug_predict_info():
     return {
-        "sequence_length": SEQUENCE_LENGTH,
         "feature_count": FEATURE_COUNT,
+        "sequence_length": SEQUENCE_LENGTH,
         "feature_columns": FEATURE_COLUMNS,
-        "x_scaler_n_features_in": int(getattr(x_scaler, "n_features_in_", -1)),
-        "arimax_exog_feature_count": max(0, FEATURE_COUNT - 1),
+        "scaler_expected_features": int(getattr(x_scaler, "n_features_in_", -1)),
     }
 
 
@@ -450,18 +364,14 @@ def send_message(payload: SendMessageRequest):
     df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
     save_messages_df(df)
 
-    return {
-        "status": "sent",
-        "success": True,
-        "message_id": row["message_id"],
-    }
+    return {"status": "sent", "message_id": row["message_id"]}
 
 
 @app.post("/messages/reply")
 def reply_to_message(payload: ReplyMessageRequest):
     df = load_messages_df()
-
     mask = df["message_id"].astype(str) == str(payload.message_id)
+
     if not mask.any():
         raise HTTPException(status_code=404, detail="Message not found")
 
@@ -472,12 +382,7 @@ def reply_to_message(payload: ReplyMessageRequest):
     df.loc[mask, "status"] = "replied"
 
     save_messages_df(df)
-
-    return {
-        "status": "updated",
-        "success": True,
-        "message_id": payload.message_id,
-    }
+    return {"status": "updated", "message_id": payload.message_id}
 
 
 @app.get("/optimize_resources/{predicted_patients}")
@@ -498,7 +403,6 @@ def predict(data: PredictRequest):
 
         pred_result = predict_hybrid(arr)
         hybrid_pred = float(pred_result["hybrid_prediction"])
-
         optimization_result = optimize_resources(hybrid_pred)
         summary = optimization_result["summary"]
         emergency = predict_emergency_load(hybrid_pred)
@@ -534,23 +438,14 @@ def predict(data: PredictRequest):
 
 @app.post("/simulate")
 def simulate(data: SimulateRequest):
-    simulated_patients = data.predicted_patients * (
-        1 + data.demand_increase_percent / 100
-    )
+    simulated_patients = data.predicted_patients * (1 + data.demand_increase_percent / 100)
 
     optimization_result = optimize_resources(simulated_patients)
     summary = optimization_result["summary"]
-
-    bed_result = allocate_beds(
-        int(np.ceil(simulated_patients)),
-        data.beds_available
-    )
+    bed_result = allocate_beds(int(np.ceil(simulated_patients)), data.beds_available)
     emergency = predict_emergency_load(simulated_patients)
 
-    doctor_shortage = max(
-        0,
-        int(summary["doctors_needed_total"]) - data.doctors_available
-    )
+    doctor_shortage = max(0, int(summary["doctors_needed_total"]) - data.doctors_available)
 
     return {
         "simulated_patients": float(simulated_patients),
@@ -599,7 +494,6 @@ def login_user(payload: LoginRequest, db: Session = Depends(get_db)):
 @app.get("/users")
 def get_users(db: Session = Depends(get_db)):
     users = db.query(User).all()
-
     return [
         {
             "username": u.username,
@@ -620,10 +514,7 @@ def get_latest_patient_flow():
 
     missing = [col for col in FEATURE_COLUMNS if col not in df.columns]
     if missing:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Missing feature columns in engineered data: {missing}"
-        )
+        raise HTTPException(status_code=500, detail=f"Missing feature columns: {missing}")
 
     df = df[FEATURE_COLUMNS].copy()
 
@@ -633,12 +524,7 @@ def get_latest_patient_flow():
     df = df.dropna().reset_index(drop=True)
 
     if len(df) < SEQUENCE_LENGTH:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Not enough rows found in {ENGINEERED_FILE}"
-        )
+        raise HTTPException(status_code=404, detail="Not enough rows for latest sequence")
 
-    rows = df.tail(SEQUENCE_LENGTH)
-    sequence = rows.values.astype(float).tolist()
-
+    sequence = df.tail(SEQUENCE_LENGTH).values.astype(float).tolist()
     return {"sequence": sequence}
