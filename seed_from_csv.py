@@ -7,8 +7,8 @@ from models import (
     ORBooking,
     StaffShift,
     User,
-    RecommendationLog,
-    AuditLog,
+    RecommendationRecord,
+    AuditEvent,
 )
 
 Base.metadata.create_all(bind=engine)
@@ -136,15 +136,22 @@ def seed_recommendation_log():
             print("recommendation_log.csv is empty. Skipping recommendation log seeding.")
             return
 
+        # Repo schema stores recommendations in RecommendationRecord.
+        # CSV columns vary by version; we map to the closest supported fields.
         for _, row in df.iterrows():
-            record = RecommendationLog(
-                timestamp=safe_value(row.get("timestamp")),
-                department=safe_value(row.get("department")),
-                recommendation=safe_value(row.get("recommendation") or row.get("message")),
-                status=safe_value(row.get("status")),
-                approver=safe_value(row.get("approver") or row.get("approved_by")),
-                execution_status=safe_value(row.get("execution_status")),
+            record = RecommendationRecord(
+                recommendation_id=str(safe_value(row.get("recommendation_id") or "")).strip() or None,
+                timestamp=str(safe_value(row.get("timestamp") or "")).strip() or None,
+                rec_type=str(safe_value(row.get("type") or row.get("rec_type") or "general")).strip() or "general",
+                message=str(safe_value(row.get("message") or row.get("recommendation") or "")).strip() or "",
+                status=str(safe_value(row.get("status") or "pending")).strip() or "pending",
+                approved_by=str(safe_value(row.get("approved_by") or row.get("approver") or "")).strip() or "",
+                execution_status=str(safe_value(row.get("execution_status") or "")).strip() or "",
+                execution_note=str(safe_value(row.get("execution_note") or "")).strip() or "",
+                affected_entities=str(safe_value(row.get("affected_files") or row.get("affected_entities") or "")).strip() or "",
             )
+            if not record.recommendation_id:
+                continue
             db.add(record)
 
         db.commit()
@@ -161,15 +168,19 @@ def seed_audit_log():
             return
 
         df = pd.read_csv("audit_log.csv")
+        # Repo schema stores audit events in AuditEvent.
         for _, row in df.iterrows():
-            record = AuditLog(
-                timestamp=safe_value(row.get("timestamp")),
-                action=safe_value(row.get("action")),
-                actor=safe_value(row.get("actor")),
-                target=safe_value(row.get("target")),
-                status=safe_value(row.get("status")),
-                details=safe_value(row.get("details")),
+            record = AuditEvent(
+                audit_id=str(safe_value(row.get("audit_id") or "")).strip() or None,
+                timestamp=str(safe_value(row.get("timestamp") or "")).strip() or None,
+                action=str(safe_value(row.get("action") or "")).strip() or "",
+                actor=str(safe_value(row.get("actor") or "")).strip() or "",
+                target=str(safe_value(row.get("target") or "")).strip() or "",
+                status=str(safe_value(row.get("status") or "")).strip() or "",
+                details=str(safe_value(row.get("details") or "")).strip() or "",
             )
+            if not record.audit_id:
+                continue
             db.add(record)
         db.commit()
         print("audit_log seeded successfully.")

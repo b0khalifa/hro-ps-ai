@@ -1,0 +1,15 @@
+{
+  "timestamp": "2026-03-19T02:14:23.086555Z",
+  "git_commit": "8dd9a6f8bdfe7ad89addec9bbf1df8de9c2a8b16",
+  "entrypoints": {
+    "api": "uvicorn api:app --host 0.0.0.0 --port 8000",
+    "dashboard": "streamlit run dashboard.py --server.port 8501",
+    "training_v2": "python retrain_model.py",
+    "seed_patient_flow": "python seed_patient_flow.py",
+    "seed_all_csv": "python seed_from_csv.py"
+  },
+  "notes": {
+    "docker": "docker-compose.yml defines api/db/dashboard services, but docker CLI not found on this machine",
+    "db": "Postgres reachable locally (select 1 ok)"
+  }
+}

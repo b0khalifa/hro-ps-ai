@@ -2,7 +2,7 @@ from datetime import datetime
 
 import streamlit as st
 
-from api_client import login_user_api
+from api_client import api_base_url, login_user_api
 from approval_sections import show_admin_approval_panel
 from audit_sections import show_audit_summary, show_audit_table, show_execution_trace
 from dashboard_sections import (
@@ -38,6 +38,8 @@ if "user" not in st.session_state:
 def login_view():
     st.title("🏥 HRO — AI Hospital System")
     st.caption("AI-powered hospital operations, forecasting, approvals, and staff coordination.")
+
+    st.caption(f"API: {api_base_url()}")
 
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")

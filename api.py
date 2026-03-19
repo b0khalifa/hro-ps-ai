@@ -7,7 +7,7 @@ import logging
 import joblib
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Depends, Query, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, Query, UploadFile, File, APIRouter
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from tensorflow.keras.models import load_model
@@ -17,21 +17,30 @@ from functools import lru_cache
 from artifacts import artifact_diagnostics, get_artifact_paths, load_manifest
 from feature_spec import FEATURE_COLUMNS, ARIMAX_EXOG_COLUMNS, SEQUENCE_LENGTH
 from evaluation_service import compare_models
-from database import get_db, Base, engine
+from database import get_db, init_db, engine
 from models import User, PatientFlow, MessageLog
 from resource_optimizer import optimize_resources
 from schemas import LoginRequest
 from etl_pipeline import ingest_patient_flow, ingest_appointments, ingest_or
+from auth import verify_password
 
 app = FastAPI(title="Hospital AI API")
 logging.basicConfig(level=logging.INFO)
+
+# Routers (keep public URLs stable; we can version later)
+system_router = APIRouter(tags=["system"])
+auth_router = APIRouter(prefix="/auth", tags=["auth"])
+messages_router = APIRouter(prefix="/messages", tags=["messages"])
+patient_flow_router = APIRouter(prefix="/patient_flow", tags=["patient_flow"])
+ml_router = APIRouter(tags=["ml"])
+upload_router = APIRouter(prefix="/upload", tags=["upload"])
 
 
 @app.on_event("startup")
 def _startup_create_tables():
     # Safe default for this repo: ensure tables exist at runtime.
     # For production, migrate to Alembic migrations and remove create_all.
-    Base.metadata.create_all(bind=engine)
+    init_db()
 
 LEGACY_MESSAGES_FILE = "messages_log.csv"
 LEGACY_MESSAGE_COLS = [
@@ -491,17 +500,17 @@ async def log_requests(request, call_next):
     return response
 
 
-@app.get("/")
+@system_router.get("/")
 def home():
     return {"message": "Hospital AI API is running"}
 
 
-@app.get("/health")
+@system_router.get("/health")
 def health():
     return {"status": "ok"}
 
 
-@app.get("/health/db")
+@system_router.get("/health/db")
 def health_db():
     try:
         with engine.connect() as conn:
@@ -511,7 +520,7 @@ def health_db():
         raise HTTPException(status_code=503, detail=f"db_unhealthy: {e}")
 
 
-@app.get("/status")
+@system_router.get("/status")
 def system_status():
     diag = artifact_diagnostics()
     manifest = load_manifest()
@@ -536,7 +545,7 @@ def system_status():
     }
 
 
-@app.get("/feature_config")
+@system_router.get("/feature_config")
 def get_feature_config():
     return {
         "feature_count": FEATURE_COUNT,
@@ -546,12 +555,12 @@ def get_feature_config():
     }
 
 
-@app.get("/artifacts/manifest")
+@system_router.get("/artifacts/manifest")
 def get_artifacts_manifest():
     return load_manifest()
 
 
-@app.get("/message_templates")
+@messages_router.get("/templates")
 def get_message_templates():
     return {
         "admin_templates": ADMIN_MESSAGE_TEMPLATES,
@@ -559,7 +568,7 @@ def get_message_templates():
     }
 
 
-@app.get("/messages")
+@messages_router.get("")
 def get_messages(
     role: Optional[str] = Query(default=None),
     department: Optional[str] = Query(default=None),
@@ -607,7 +616,7 @@ def get_messages(
     }
 
 
-@app.post("/messages/send")
+@messages_router.post("/send")
 def send_message(payload: SendMessageRequest, db: Session = Depends(get_db)):
     bootstrap_messages_from_csv_if_needed(db)
 
@@ -641,7 +650,7 @@ def send_message(payload: SendMessageRequest, db: Session = Depends(get_db)):
     }
 
 
-@app.post("/messages/reply")
+@messages_router.post("/reply")
 def reply_to_message(payload: ReplyMessageRequest, db: Session = Depends(get_db)):
     bootstrap_messages_from_csv_if_needed(db)
 
@@ -668,7 +677,7 @@ def reply_to_message(payload: ReplyMessageRequest, db: Session = Depends(get_db)
     }
 
 
-@app.post("/messages/ack")
+@messages_router.post("/ack")
 def acknowledge_message(payload: MessageActionRequest, db: Session = Depends(get_db)):
     bootstrap_messages_from_csv_if_needed(db)
 
@@ -686,7 +695,7 @@ def acknowledge_message(payload: MessageActionRequest, db: Session = Depends(get
     return {"status": "acknowledged", "data": serialize_message_row(row)}
 
 
-@app.post("/messages/archive")
+@messages_router.post("/archive")
 def archive_message(payload: MessageActionRequest, db: Session = Depends(get_db)):
     bootstrap_messages_from_csv_if_needed(db)
 
@@ -705,13 +714,13 @@ def archive_message(payload: MessageActionRequest, db: Session = Depends(get_db)
     return {"status": "archived", "data": serialize_message_row(row)}
 
 
-@app.post("/auth/login")
+@auth_router.post("/login")
 def login_user(payload: LoginRequest, db: Session = Depends(get_db)):
     username = normalize_text(payload.username)
     password = normalize_text(payload.password)
 
     user = db.query(User).filter(User.username == username).first()
-    if user is None or normalize_text(user.password) != password:
+    if user is None or not verify_password(password, normalize_text(user.password)):
         raise HTTPException(status_code=401, detail="Invalid username or password.")
 
     return {
@@ -722,7 +731,7 @@ def login_user(payload: LoginRequest, db: Session = Depends(get_db)):
     }
 
 
-@app.get("/users")
+@auth_router.get("/users")
 def get_users(db: Session = Depends(get_db)):
     users = db.query(User).all()
     return {
@@ -738,7 +747,7 @@ def get_users(db: Session = Depends(get_db)):
     }
 
 
-@app.get("/patient_flow/latest")
+@patient_flow_router.get("/latest")
 def get_latest_patient_flow_sequence(db: Session = Depends(get_db)):
     rows = db.query(PatientFlow).order_by(PatientFlow.id.desc()).limit(SEQUENCE_LENGTH).all()
     if len(rows) < SEQUENCE_LENGTH:
@@ -755,12 +764,12 @@ def get_latest_patient_flow_sequence(db: Session = Depends(get_db)):
     }
 
 
-@app.get("/optimize_resources/{predicted_patients}")
+@ml_router.get("/optimize_resources/{predicted_patients}")
 def optimize_resources_endpoint(predicted_patients: float):
     return optimize_resources(predicted_patients)
 
 
-@app.post("/predict")
+@ml_router.post("/predict")
 def predict(payload: PredictRequest):
     sequence_array = np.array(payload.sequence, dtype=float)
 
@@ -784,7 +793,7 @@ def predict(payload: PredictRequest):
     }
 
 
-@app.post("/simulate")
+@ml_router.post("/simulate")
 def simulate(payload: SimulateRequest):
     adjusted_patients = float(payload.predicted_patients) * (
         1.0 + float(payload.demand_increase_percent) / 100.0
@@ -807,7 +816,7 @@ def simulate(payload: SimulateRequest):
     }
 
 
-@app.post("/explain")
+@ml_router.post("/explain")
 def explain(payload: ExplainRequest):
     sequence_array = np.array(payload.sequence, dtype=float)
 
@@ -823,7 +832,7 @@ def explain(payload: ExplainRequest):
     return explain_feature_importance(sequence_array)
 
 
-@app.post("/evaluate")
+@ml_router.post("/evaluate")
 def evaluate(payload: EvaluateRequest):
     return compare_models(
         actual=payload.actual,
@@ -833,19 +842,40 @@ def evaluate(payload: EvaluateRequest):
     )
 
 
-@app.post("/upload/patient_flow")
+@upload_router.post("/patient_flow")
 def upload_patient_flow(file: UploadFile = File(...)):
     ingest_patient_flow(file.file)
     return {"status": "patient flow uploaded"}
 
 
-@app.post("/upload/appointments")
+@upload_router.post("/appointments")
 def upload_appointments(file: UploadFile = File(...)):
     ingest_appointments(file.file)
     return {"status": "appointments uploaded"}
 
 
-@app.post("/upload/or")
+@upload_router.post("/or")
 def upload_or(file: UploadFile = File(...)):
     ingest_or(file.file)
     return {"status": "or bookings uploaded"}
+
+
+# Backwards-compatible aliases (keep existing dashboard client paths working)
+# - Old: GET /message_templates  -> New: GET /messages/templates
+@system_router.get("/message_templates", include_in_schema=False)
+def _legacy_message_templates():
+    return get_message_templates()
+
+
+# - Old: GET /users -> New: GET /auth/users
+@system_router.get("/users", include_in_schema=False)
+def _legacy_users(db: Session = Depends(get_db)):
+    return get_users(db=db)
+
+
+app.include_router(system_router)
+app.include_router(auth_router)
+app.include_router(messages_router)
+app.include_router(patient_flow_router)
+app.include_router(ml_router)
+app.include_router(upload_router)

@@ -4,6 +4,8 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from feature_spec import FEATURE_COLUMNS as LOCAL_FEATURE_COLUMNS, SEQUENCE_LENGTH as LOCAL_SEQUENCE_LENGTH
+
 from api_client import (
     explain_prediction,
     get_feature_config,
@@ -26,11 +28,73 @@ def _load_runtime_dataframe():
     return pd.DataFrame()
 
 
+def _build_engineered_frame_from_base(df: pd.DataFrame, feature_columns: list[str]) -> pd.DataFrame:
+    """Build the engineered feature columns from a base clean_data-like dataframe.
+
+    This keeps the dashboard usable even when:
+    - Postgres isn't seeded yet (API /patient_flow/latest fails)
+    - engineered_data.csv is not generated
+    """
+
+    if df.empty:
+        return pd.DataFrame()
+
+    base_cols = [c for c in ["patients", "day_of_week", "month", "is_weekend", "holiday", "weather"] if c in df.columns]
+    if "patients" not in base_cols:
+        return pd.DataFrame()
+
+    base_df = df.copy().reset_index(drop=True)
+    for col in base_cols:
+        base_df[col] = pd.to_numeric(base_df[col], errors="coerce")
+    base_df = base_df.dropna(subset=["patients"]).reset_index(drop=True)
+    if base_df.empty:
+        return pd.DataFrame()
+
+    # Ensure base numeric columns exist.
+    for col in ["day_of_week", "month", "is_weekend", "holiday", "weather"]:
+        if col not in base_df.columns:
+            base_df[col] = 0.0
+        base_df[col] = pd.to_numeric(base_df[col], errors="coerce").fillna(0.0)
+
+    # Use row index to synthesize hour signal (same approach as API fallback builder)
+    base_df["hour"] = base_df.index % 24
+    base_df["hour_sin"] = np.sin(2 * np.pi * base_df["hour"] / 24.0)
+    base_df["hour_cos"] = np.cos(2 * np.pi * base_df["hour"] / 24.0)
+
+    patients = base_df["patients"].astype(float)
+    for lag in [1, 2, 3, 6, 12, 24]:
+        base_df[f"patients_lag_{lag}"] = patients.shift(lag)
+
+    shifted = patients.shift(1)
+    for window in [3, 6, 12, 24]:
+        base_df[f"patients_roll_mean_{window}"] = shifted.rolling(window, min_periods=1).mean()
+        base_df[f"patients_roll_std_{window}"] = shifted.rolling(window, min_periods=2).std()
+
+    base_df["patients_diff_1"] = patients.diff(1)
+    base_df["patients_diff_24"] = patients.diff(24)
+    base_df["trend_feature"] = (
+        np.arange(len(base_df), dtype=float) / float(len(base_df) - 1)
+        if len(base_df) > 1 else 0.0
+    )
+
+    for col in [c for c in base_df.columns if c.startswith("patients_roll_std_")]:
+        base_df[col] = base_df[col].fillna(0.0)
+
+    base_df = base_df.bfill().ffill().fillna(0.0)
+
+    # Ensure we can slice exactly the same columns the API expects.
+    missing = [c for c in feature_columns if c not in base_df.columns]
+    if missing:
+        return pd.DataFrame()
+
+    return base_df
+
+
 def _load_runtime_sequence(df: pd.DataFrame):
     latest_sequence = get_latest_sequence()
     feature_config = get_feature_config() or {}
-    feature_columns = feature_config.get("feature_columns", [])
-    sequence_length = int(feature_config.get("sequence_length", 24))
+    feature_columns = feature_config.get("feature_columns") or list(LOCAL_FEATURE_COLUMNS)
+    sequence_length = int(feature_config.get("sequence_length") or LOCAL_SEQUENCE_LENGTH)
 
     if latest_sequence is not None:
         arr = np.array(latest_sequence, dtype=float)
@@ -38,12 +102,31 @@ def _load_runtime_sequence(df: pd.DataFrame):
         if arr.shape == expected_shape:
             return arr, feature_columns, sequence_length
 
+        # API reachable but returned unexpected payload.
+        st.warning(
+            f"Latest sequence received from API but shape was {arr.shape} (expected {expected_shape}). "
+            "Falling back to local CSV sequence."
+        )
+
     if df.empty or not feature_columns:
         return None, feature_columns, sequence_length
 
     missing = [c for c in feature_columns if c not in df.columns]
     if missing:
-        return None, feature_columns, sequence_length
+        engineered_df = _build_engineered_frame_from_base(df, feature_columns)
+        if engineered_df.empty:
+            return None, feature_columns, sequence_length
+
+        if len(engineered_df) < sequence_length:
+            return None, feature_columns, sequence_length
+
+        return (
+            engineered_df[feature_columns]
+            .tail(sequence_length)
+            .values.astype(float),
+            feature_columns,
+            sequence_length,
+        )
 
     df = df.copy()
     for col in feature_columns:
@@ -64,7 +147,10 @@ def get_live_context():
     if last_sequence is None:
         return {
             "ready": False,
-            "reason": "Latest model input sequence could not be loaded.",
+            "reason": (
+                "Latest model input sequence could not be loaded. "
+                "Check API /patient_flow/latest (needs seeded patient_flow rows) or ensure engineered_data.csv exists."
+            ),
             "df": df,
         }
 
@@ -72,7 +158,17 @@ def get_live_context():
     if not result:
         return {
             "ready": False,
-            "reason": "Prediction API is not reachable.",
+            "reason": (
+                "Prediction API is not reachable or returned an error. "
+                "Make sure uvicorn is running and API_BASE_URL is correct."
+            ),
+            "df": df,
+        }
+
+    if "predicted_patients_next_hour" not in result:
+        return {
+            "ready": False,
+            "reason": f"Prediction API response missing 'predicted_patients_next_hour': keys={list(result.keys())}",
             "df": df,
         }
 

@@ -1,9 +1,12 @@
 import os
 
+from contextlib import contextmanager
 from functools import lru_cache
+from typing import Generator, Iterator
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 DB_USER = "postgres"
 DB_PASSWORD = "postgres"
@@ -12,7 +15,14 @@ DB_PORT = "5432"
 DB_NAME = "hro_db"
 
 DEFAULT_DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL).strip() or DEFAULT_DATABASE_URL
+
+# Keep this module import-safe (no DB calls on import).
+_raw_database_url = os.getenv("DATABASE_URL")
+DATABASE_URL = (
+    (_raw_database_url.strip() if isinstance(_raw_database_url, str) else "")
+    or DEFAULT_DATABASE_URL
+).rstrip("/")
+
 
 def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name)
@@ -32,7 +42,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 @lru_cache(maxsize=1)
-def get_engine():
+def get_engine() -> Engine:
     # Production-friendly defaults while keeping local-dev simple.
     # - pool_pre_ping avoids stale connections
     # - pool_recycle helps with network timeouts
@@ -47,14 +57,52 @@ def get_engine():
 
 
 # Backwards-compatible exports (other modules import these symbols)
-engine = get_engine()
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+engine: Engine = get_engine()
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    expire_on_commit=False,
+    bind=engine,
+)
 Base = declarative_base()
 
 
-def get_db():
-    db = SessionLocal()
+def init_db() -> None:
+    """Create tables for all imported models.
+
+    In production prefer migrations (Alembic). In this repo we keep create_all as
+    a dev-friendly default.
+    """
+
+    Base.metadata.create_all(bind=engine)
+
+
+def get_db() -> Generator[Session, None, None]:
+    """FastAPI dependency that yields a SQLAlchemy Session per request."""
+
+    db: Session = SessionLocal()
     try:
         yield db
+    finally:
+        db.close()
+
+
+@contextmanager
+def session_scope(commit: bool = False) -> Iterator[Session]:
+    """Reusable session scope for scripts/Streamlit helpers.
+
+    Args:
+        commit: when True, commits on success and rolls back on exception.
+    """
+
+    db: Session = SessionLocal()
+    try:
+        yield db
+        if commit:
+            db.commit()
+    except Exception:
+        if commit:
+            db.rollback()
+        raise
     finally:
         db.close()

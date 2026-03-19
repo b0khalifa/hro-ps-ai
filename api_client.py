@@ -11,6 +11,7 @@ def _safe_get(url, params=None, timeout=20):
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
+        # Streamlit will surface None; keep stdout logs for terminal/dev.
         print(f"GET API error [{url}]: {e}")
         return None
 
@@ -23,6 +24,10 @@ def _safe_post(url, payload=None, timeout=20):
     except requests.exceptions.RequestException as e:
         print(f"POST API error [{url}]: {e}")
         return None
+
+
+def api_base_url() -> str:
+    return API_BASE_URL
 
 
 def login_user_api(username, password):
