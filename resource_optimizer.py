@@ -1,6 +1,20 @@
-import math
-from typing import Dict, List
+"""Constraint-aware resource optimizer.
 
+This module consumes forecast outputs (predicted patient load) + current
+operational state (appointments, OR, staff shifts) and produces:
+- department allocations
+- actionable plans (with entity IDs where possible)
+- summary objective score proxies (wait time / overcrowding / utilization)
+
+NOTE: This is a first production-grade step *without external solvers*.
+Constraints are enforced by explicit feasibility rules (cannot move more staff
+than exist, etc.).
+"""
+
+import math
+from typing import Dict, List, Tuple
+
+import numpy as np
 import pandas as pd
 
 from database import SessionLocal
@@ -166,9 +180,159 @@ def _build_recommendations(df: pd.DataFrame) -> List[str]:
     return recommendations
 
 
-def optimize_resources(predicted_patients):
+def _load_entities():
+    """Load entities used for actionable plans."""
+
+    db = SessionLocal()
+    try:
+        appts = db.query(Appointment).all()
+        or_rows = db.query(ORBooking).all()
+        shifts = db.query(StaffShift).all()
+        return appts, or_rows, shifts
+    finally:
+        db.close()
+
+
+def _shift_is_active(row: StaffShift) -> bool:
+    status = str(row.status or "").strip().lower()
+    return status not in {"off", "cancelled", "cancelled shift"}
+
+
+def _build_staff_transfer_plan(
+    df: pd.DataFrame,
+    shifts: List[StaffShift],
+    role: str,
+) -> List[dict]:
+    """Constraint-based reallocation: move staff from surplus to shortage.
+
+    Constraints:
+    - cannot move more staff than exist in a department
+    - only move within same role
+    """
+
+    shortage_col = "doctor_shortage" if role == "doctor" else "nurse_shortage"
+    staff_col = "doctor_staff_count" if role == "doctor" else "nurse_staff_count"
+
+    deficits = (
+        df[df[shortage_col] > 0]
+        .sort_values(by=shortage_col, ascending=False)
+        [["department", shortage_col]]
+        .to_dict("records")
+    )
+
+    # Surplus = current staff - required staff (proxy: capacity/required). We use shortage<0 as surplus.
+    # Since df contains only shortage>=0, approximate surplus from (staff_count - required).
+    required_col = "doctors_required" if role == "doctor" else "nurses_required"
+    surplus_rows = []
+    for _, row in df.iterrows():
+        surplus = int(_safe_int(row.get(staff_col, 0)) - _safe_int(row.get(required_col, 0)))
+        if surplus > 0:
+            surplus_rows.append({"department": row["department"], "surplus": surplus})
+    surplus_rows.sort(key=lambda x: x["surplus"], reverse=True)
+
+    # Index shifts by dept+role
+    shifts_by_dept: Dict[str, List[StaffShift]] = {}
+    for s in shifts:
+        if str(s.role or "").strip().lower() != role:
+            continue
+        dept = str(s.department or "").strip()
+        if dept not in shifts_by_dept:
+            shifts_by_dept[dept] = []
+        if _shift_is_active(s):
+            shifts_by_dept[dept].append(s)
+
+    actions: List[dict] = []
+    for deficit in deficits:
+        to_dept = deficit["department"]
+        remaining = int(deficit[shortage_col])
+        if remaining <= 0:
+            continue
+
+        for donor in surplus_rows:
+            if remaining <= 0:
+                break
+            from_dept = donor["department"]
+            if donor["surplus"] <= 0:
+                continue
+            if from_dept == to_dept:
+                continue
+
+            available_shifts = shifts_by_dept.get(from_dept, [])
+            if not available_shifts:
+                continue
+
+            move = min(remaining, donor["surplus"], len(available_shifts))
+            picked = available_shifts[:move]
+            shifts_by_dept[from_dept] = available_shifts[move:]
+
+            donor["surplus"] -= move
+            remaining -= move
+
+            actions.append(
+                {
+                    "type": "staff_reassign",
+                    "role": role,
+                    "from_department": from_dept,
+                    "to_department": to_dept,
+                    "count": int(move),
+                    "shift_ids": [int(s.id) for s in picked if s.id is not None],
+                    "staff_usernames": [str(s.staff_username or "").strip() for s in picked],
+                }
+            )
+
+    return actions
+
+
+def _select_appointment_reschedules(
+    appts: List[Appointment],
+    department: str,
+    limit: int = 3,
+) -> List[dict]:
+    candidates = [
+        a
+        for a in appts
+        if str(a.department or "").strip() == department
+        and str(a.status or "").strip().lower() in {"scheduled", "review required", "reschedule suggested", ""}
+    ]
+    candidates.sort(key=lambda a: _safe_int(a.patient_count, 0), reverse=True)
+    picked = candidates[:limit]
+    return [
+        {
+            "appointment_db_id": int(a.id) if a.id is not None else None,
+            "appointment_id": str(a.appointment_id or "").strip(),
+            "department": str(a.department or "").strip(),
+            "time_slot": str(a.time_slot or "").strip(),
+            "patient_count": _safe_int(a.patient_count, 0),
+        }
+        for a in picked
+    ]
+
+
+def _select_or_escalations(or_rows: List[ORBooking], department: str, limit: int = 3) -> List[dict]:
+    candidates = [
+        r
+        for r in or_rows
+        if str(r.department or "").strip() == department
+        and str(r.status or "").strip().lower() in {"pending", "scheduled", "priority review"}
+    ]
+    picked = candidates[:limit]
+    return [
+        {
+            "or_db_id": int(r.id) if r.id is not None else None,
+            "booking_id": str(r.booking_id or "").strip(),
+            "room": str(r.room or "").strip(),
+            "time_slot": str(r.time_slot or "").strip(),
+            "procedure": str(r.procedure or "").strip(),
+            "status": str(r.status or "").strip(),
+        }
+        for r in picked
+    ]
+
+
+def optimize_resources(predicted_patients: float):
     predicted_patients = float(predicted_patients)
     operational_state = _load_operational_state()
+    appts, or_rows, shifts = _load_entities()
 
     department_rows = []
     for department, cfg in DEPARTMENT_CONFIG.items():
@@ -182,16 +346,14 @@ def optimize_resources(predicted_patients):
         department_patients_base = predicted_patients * cfg["share"]
         department_patients = department_patients_base * pressure_modifier
 
+        # Demand model (to be calibrated later):
         beds_required = _safe_ceil(department_patients * 1.10)
         doctors_required = max(1, _safe_ceil(department_patients / 8))
         nurses_required = max(1, _safe_ceil(department_patients / 4))
 
-        effective_doctor_capacity = max(cfg["doctors_capacity"], doctor_staff_count)
-        effective_nurse_capacity = max(cfg["nurses_capacity"], nurse_staff_count)
-
         bed_shortage = max(0, beds_required - cfg["beds_capacity"])
-        doctor_shortage = max(0, doctors_required - effective_doctor_capacity)
-        nurse_shortage = max(0, nurses_required - effective_nurse_capacity)
+        doctor_shortage = max(0, doctors_required - max(cfg["doctors_capacity"], doctor_staff_count))
+        nurse_shortage = max(0, nurses_required - max(cfg["nurses_capacity"], nurse_staff_count))
 
         status = _department_status(
             required_beds=beds_required,
@@ -200,24 +362,28 @@ def optimize_resources(predicted_patients):
             critical_ratio=cfg["critical_occupancy"],
         )
 
-        department_rows.append({
-            "department": department,
-            "predicted_patients": round(department_patients, 2),
-            "base_predicted_patients": round(department_patients_base, 2),
-            "pressure_modifier": round(pressure_modifier, 3),
-            "appointments_load": appointments_load,
-            "or_pending_count": or_pending_count,
-            "beds_capacity": cfg["beds_capacity"],
-            "doctors_capacity": effective_doctor_capacity,
-            "nurses_capacity": effective_nurse_capacity,
-            "beds_required": beds_required,
-            "doctors_required": doctors_required,
-            "nurses_required": nurses_required,
-            "bed_shortage": bed_shortage,
-            "doctor_shortage": doctor_shortage,
-            "nurse_shortage": nurse_shortage,
-            "status": status,
-        })
+        department_rows.append(
+            {
+                "department": department,
+                "predicted_patients": round(department_patients, 2),
+                "base_predicted_patients": round(department_patients_base, 2),
+                "pressure_modifier": round(pressure_modifier, 3),
+                "appointments_load": appointments_load,
+                "or_pending_count": or_pending_count,
+                "beds_capacity": cfg["beds_capacity"],
+                "doctors_capacity": cfg["doctors_capacity"],
+                "nurses_capacity": cfg["nurses_capacity"],
+                "doctor_staff_count": doctor_staff_count,
+                "nurse_staff_count": nurse_staff_count,
+                "beds_required": beds_required,
+                "doctors_required": doctors_required,
+                "nurses_required": nurses_required,
+                "bed_shortage": bed_shortage,
+                "doctor_shortage": doctor_shortage,
+                "nurse_shortage": nurse_shortage,
+                "status": status,
+            }
+        )
 
     df = pd.DataFrame(department_rows)
     df["priority_score"] = (
@@ -230,17 +396,58 @@ def optimize_resources(predicted_patients):
     )
     df = df.sort_values(by="priority_score", ascending=False).reset_index(drop=True)
 
-    recommendations = _build_recommendations(df)
-    actions = []
+    # Constraint-based plans
+    staff_actions = []
+    staff_actions.extend(_build_staff_transfer_plan(df, shifts, role="doctor"))
+    staff_actions.extend(_build_staff_transfer_plan(df, shifts, role="nurse"))
+
+    appointment_actions = []
+    or_actions = []
     for _, row in df.iterrows():
-        if row["doctor_shortage"] > 0:
-            actions.append({"type": "staff", "department": row["department"], "action": f"Assign backup doctors to {row['department']}"})
-        if row["nurse_shortage"] > 0:
-            actions.append({"type": "staff", "department": row["department"], "action": f"Assign backup nurses to {row['department']}"})
-        if row["appointments_load"] >= 20:
-            actions.append({"type": "appointments", "department": row["department"], "action": f"Review and reschedule overloaded appointments in {row['department']}"})
-        if row["or_pending_count"] >= 2:
-            actions.append({"type": "or", "department": row["department"], "action": f"Escalate pending OR bookings in {row['department']}"})
+        dept = row["department"]
+        if int(row.get("appointments_load", 0)) >= 20 or int(row.get("bed_shortage", 0)) > 0:
+            picked = _select_appointment_reschedules(appts, dept, limit=3)
+            if picked:
+                appointment_actions.append(
+                    {
+                        "type": "appointments_reschedule",
+                        "department": dept,
+                        "appointments": picked,
+                        "reason": "Reduce waiting time / bed pressure",
+                    }
+                )
+
+        if int(row.get("or_pending_count", 0)) >= 2 or dept == "Surgery":
+            picked_or = _select_or_escalations(or_rows, dept, limit=3)
+            if picked_or:
+                or_actions.append(
+                    {
+                        "type": "or_escalate",
+                        "department": dept,
+                        "bookings": picked_or,
+                        "reason": "Reduce OR backlog and protect emergency capacity",
+                    }
+                )
+
+    # Objective proxies (until we integrate real wait-time models)
+    overcrowding_score = float(df["bed_shortage"].sum())
+    wait_time_proxy = float(df["doctor_shortage"].sum() * 2.0 + df["nurse_shortage"].sum() * 1.0)
+    utilization_proxy = float(
+        np.mean(
+            [
+                min(2.0, float(r["beds_required"]) / float(max(1, r["beds_capacity"])))
+                for _, r in df.iterrows()
+            ]
+        )
+    )
+    objective = float(overcrowding_score * 3.0 + wait_time_proxy * 2.0 + utilization_proxy)
+
+    recommendations = _build_recommendations(df)
+
+    actions = []
+    actions.extend(staff_actions)
+    actions.extend(appointment_actions)
+    actions.extend(or_actions)
 
     return {
         "summary": {
@@ -249,9 +456,15 @@ def optimize_resources(predicted_patients):
             "doctors_needed_total": int(df["doctors_required"].sum()),
             "nurses_needed_total": int(df["nurses_required"].sum()),
             "top_priority_department": df.iloc[0]["department"] if not df.empty else None,
+            "objective": round(objective, 3),
+            "wait_time_proxy": round(wait_time_proxy, 3),
+            "overcrowding_score": round(overcrowding_score, 3),
+            "utilization_proxy": round(utilization_proxy, 3),
         },
         "department_allocations": df.to_dict(orient="records"),
         "recommendations": recommendations,
         "actions": actions,
     }
+
+
 

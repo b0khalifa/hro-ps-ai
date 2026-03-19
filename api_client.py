@@ -2,12 +2,19 @@ import requests
 
 import os
 
+
+def _auth_headers() -> dict:
+    token = os.getenv("API_TOKEN", "").strip()
+    if not token:
+        return {}
+    return {"Authorization": f"Bearer {token}"}
+
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000").strip() or "http://127.0.0.1:8000"
 
 
 def _safe_get(url, params=None, timeout=20):
     try:
-        response = requests.get(url, params=params, timeout=timeout)
+        response = requests.get(url, params=params, timeout=timeout, headers=_auth_headers())
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
@@ -18,7 +25,7 @@ def _safe_get(url, params=None, timeout=20):
 
 def _safe_post(url, payload=None, timeout=20):
     try:
-        response = requests.post(url, json=payload, timeout=timeout)
+        response = requests.post(url, json=payload, timeout=timeout, headers=_auth_headers())
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
@@ -76,7 +83,8 @@ def get_optimization(predicted_patients):
 
 
 def get_message_templates():
-    return _safe_get(f"{API_BASE_URL}/message_templates", timeout=10)
+    # prefer stable new route; keep backwards compatibility in API too
+    return _safe_get(f"{API_BASE_URL}/messages/templates", timeout=10)
 
 
 def get_messages(
@@ -159,3 +167,11 @@ def evaluate_model(actual, lstm, arimax, hybrid):
         "hybrid": hybrid,
     }
     return _safe_post(f"{API_BASE_URL}/evaluate", payload=payload, timeout=25)
+
+
+def get_optimization_runs(limit: int = 20):
+    return _safe_get(f"{API_BASE_URL}/optimization_runs", params={"limit": int(limit)}, timeout=15)
+
+
+def get_optimization_run(run_id: str):
+    return _safe_get(f"{API_BASE_URL}/optimization_runs/{run_id}", timeout=15)

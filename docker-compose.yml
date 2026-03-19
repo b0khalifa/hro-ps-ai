@@ -18,6 +18,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/hro_db
       ARTIFACT_DIR: /app
+      JWT_SECRET_KEY: "change-me-in-prod"
     depends_on:
       - db
 
@@ -29,6 +30,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/hro_db
       API_BASE_URL: http://api:8000
+      JWT_SECRET_KEY: "change-me-in-prod"
     depends_on:
       - api
       - db

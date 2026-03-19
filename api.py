@@ -1,28 +1,24 @@
-from typing import List, Optional, Any, Dict, Tuple
+from typing import List, Optional
 import json
-import os
 from datetime import datetime
 import logging
 
-import joblib
 import numpy as np
-import pandas as pd
-from fastapi import FastAPI, HTTPException, Depends, Query, UploadFile, File, APIRouter
+from fastapi import FastAPI, HTTPException, Depends, Query, UploadFile, File, APIRouter, Header
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from tensorflow.keras.models import load_model
 from sqlalchemy import text
-from functools import lru_cache
 
-from artifacts import artifact_diagnostics, get_artifact_paths, load_manifest
+from artifacts import artifact_diagnostics, load_manifest
 from feature_spec import FEATURE_COLUMNS, ARIMAX_EXOG_COLUMNS, SEQUENCE_LENGTH
 from evaluation_service import compare_models
 from database import get_db, init_db, engine
-from models import User, PatientFlow, MessageLog
+from models import User, PatientFlow, MessageLog, OptimizationRun
 from resource_optimizer import optimize_resources
 from schemas import LoginRequest
 from etl_pipeline import ingest_patient_flow, ingest_appointments, ingest_or
-from auth import verify_password
+from auth import create_token, bearer_from_header, decode_token, verify_password
+from forecast_inference import load_assets as _load_assets, predict_hybrid as _predict_hybrid
 
 app = FastAPI(title="Hospital AI API")
 logging.basicConfig(level=logging.INFO)
@@ -42,7 +38,7 @@ def _startup_create_tables():
     # For production, migrate to Alembic migrations and remove create_all.
     init_db()
 
-LEGACY_MESSAGES_FILE = "messages_log.csv"
+LEGACY_MESSAGES_FILE = "messages_log.csv"  # import-only (not runtime)
 LEGACY_MESSAGE_COLS = [
     "message_id",
     "timestamp",
@@ -63,51 +59,11 @@ LEGACY_MESSAGE_COLS = [
 ]
 
 FEATURE_COUNT = len(FEATURE_COLUMNS)
-FEATURE_INDEX = {name: idx for idx, name in enumerate(FEATURE_COLUMNS)}
 
 
-def _load_hybrid_weights() -> Tuple[float, float]:
-    paths = get_artifact_paths()
+def _get_assets_or_503():
     try:
-        payload = json.loads(paths.hybrid_config.read_text(encoding="utf-8"))
-    except Exception as e:
-        raise RuntimeError(f"Failed to load hybrid_config.json from {paths.hybrid_config}") from e
-    lstm_w = float(payload.get("lstm_weight", 0.90))
-    arimax_w = float(payload.get("arimax_weight", 0.10))
-    return lstm_w, arimax_w
-
-
-@lru_cache(maxsize=1)
-def _load_forecast_assets() -> Dict[str, Any]:
-    diag = artifact_diagnostics()
-    if diag.get("missing"):
-        raise FileNotFoundError(
-            f"Missing required artifacts: {diag['missing']} (dir={diag.get('artifact_dir')})"
-        )
-
-    paths = get_artifact_paths()
-    lstm_model = load_model(str(paths.lstm_model), compile=False)
-    arimax_model = joblib.load(str(paths.arimax_model))
-    x_scaler = joblib.load(str(paths.x_scaler))
-    y_scaler = joblib.load(str(paths.y_scaler))
-    lstm_w, arimax_w = _load_hybrid_weights()
-
-    scaler_expected_features = int(getattr(x_scaler, "n_features_in_", FEATURE_COUNT))
-
-    return {
-        "lstm_model": lstm_model,
-        "arimax_model": arimax_model,
-        "x_scaler": x_scaler,
-        "y_scaler": y_scaler,
-        "lstm_weight": float(lstm_w),
-        "arimax_weight": float(arimax_w),
-        "scaler_expected_features": scaler_expected_features,
-    }
-
-
-def _get_assets_or_503() -> Dict[str, Any]:
-    try:
-        return _load_forecast_assets()
+        return _load_assets()
     except HTTPException:
         raise
     except Exception as e:
@@ -211,6 +167,58 @@ class EvaluateRequest(BaseModel):
     hybrid: List[float]
 
 
+def get_token_payload(authorization: Optional[str] = Header(default=None)) -> dict:
+    """Extract and decode JWT from Authorization: Bearer ..."""
+
+    token = bearer_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing Bearer token")
+    try:
+        return decode_token(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+
+def require_role(roles: List[str]):
+    allowed = {r.lower() for r in roles}
+
+    def _dep(payload: dict = Depends(get_token_payload)) -> dict:
+        role = str(payload.get("role", "")).lower()
+        if role not in allowed:
+            raise HTTPException(status_code=403, detail=f"Forbidden for role={role}")
+        return payload
+
+    return _dep
+
+
+require_admin = require_role(["admin"])
+require_staff_or_admin = require_role(["admin", "doctor", "nurse"])
+
+
+def build_engineered_sequence_from_patient_flow(rows: List[PatientFlow]) -> List[List[float]]:
+    """Build engineered sequence from DB rows.
+
+    NOTE: This uses the same deterministic feature engineering from Phase 1.
+    """
+
+    from forecast_features import build_latest_sequence_from_rows
+
+    payload_rows = [
+        {
+            "patients": float(r.patients),
+            "day_of_week": float(r.day_of_week or 0),
+            "month": float(r.month or 0),
+            "is_weekend": float(r.is_weekend or 0),
+            "holiday": float(r.holiday or 0),
+            "weather": float(r.weather or 0),
+            "datetime": getattr(r, "datetime", None),
+        }
+        for r in rows
+    ]
+
+    return build_latest_sequence_from_rows(payload_rows)
+
+
 def normalize_text(value, default: str = "") -> str:
     if value is None:
         return default
@@ -240,68 +248,17 @@ def parse_datetime_now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _new_run_id(prefix: str) -> str:
+    return f"{prefix}-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+
+
 def validate_sequence_shape(arr: np.ndarray):
     return arr.shape == (SEQUENCE_LENGTH, FEATURE_COUNT)
 
 
-def scale_sequence(sequence_array: np.ndarray):
-    assets = _get_assets_or_503()
-    x_scaler = assets["x_scaler"]
-    scaler_expected_features = int(assets["scaler_expected_features"])
-
-    flat = sequence_array.reshape(-1, sequence_array.shape[-1])
-    if flat.shape[1] != scaler_expected_features:
-        raise ValueError(
-            f"X has {flat.shape[1]} features, but MinMaxScaler is expecting "
-            f"{scaler_expected_features} features as input."
-        )
-    scaled_flat = x_scaler.transform(flat)
-    return scaled_flat.reshape(sequence_array.shape).astype(np.float32)
-
-
-def inverse_scale_target(pred_scaled: float):
-    assets = _get_assets_or_503()
-    y_scaler = assets["y_scaler"]
-    value = np.array([[pred_scaled]], dtype=np.float32)
-    return float(y_scaler.inverse_transform(value)[0][0])
-
-
-def get_next_exog_from_sequence(sequence_array: np.ndarray):
-    last_row = sequence_array[-1]
-    return np.array([[last_row[FEATURE_INDEX[col]] for col in ARIMAX_EXOG_COLUMNS]], dtype=float)
-
-
-def predict_lstm(sequence_array: np.ndarray):
-    assets = _get_assets_or_503()
-    lstm_model = assets["lstm_model"]
-    scaled_sequence = scale_sequence(sequence_array)
-    x_input = np.array([scaled_sequence], dtype=np.float32)
-    pred_scaled = float(lstm_model.predict(x_input, verbose=0)[0][0])
-    return inverse_scale_target(pred_scaled)
-
-
-def predict_arimax(sequence_array: np.ndarray):
-    assets = _get_assets_or_503()
-    arimax_model = assets["arimax_model"]
-    next_exog = get_next_exog_from_sequence(sequence_array)
-    forecast = arimax_model.forecast(steps=1, exog=next_exog)
-    return float(forecast.iloc[0] if hasattr(forecast, "iloc") else forecast[0])
-
-
 def predict_hybrid(sequence_array: np.ndarray):
-    assets = _get_assets_or_503()
-    lstm_pred = predict_lstm(sequence_array)
-    arimax_pred = predict_arimax(sequence_array)
-    lstm_w = float(assets["lstm_weight"])
-    arimax_w = float(assets["arimax_weight"])
-    hybrid_prediction = lstm_w * lstm_pred + arimax_w * arimax_pred
-    return {
-        "lstm_prediction": float(lstm_pred),
-        "arimax_prediction": float(arimax_pred),
-        "hybrid_prediction": float(hybrid_prediction),
-        "lstm_weight": lstm_w,
-        "arimax_weight": arimax_w,
-    }
+    # Delegate to canonical inference module.
+    return _predict_hybrid(sequence_array)
 
 
 def predict_emergency_load(predicted_patients: float):
@@ -362,61 +319,7 @@ def explain_feature_importance(sequence_array: np.ndarray):
     return {"base_prediction": float(base_pred), "feature_impacts": impacts}
 
 
-def build_engineered_sequence_from_patient_flow(rows: List[PatientFlow]) -> List[List[float]]:
-    base_df = pd.DataFrame([
-        {
-            "patients": float(r.patients),
-            "day_of_week": float(r.day_of_week or 0),
-            "month": float(r.month or 0),
-            "is_weekend": float(r.is_weekend or 0),
-            "holiday": float(r.holiday or 0),
-            "weather": float(r.weather or 0),
-        }
-        for r in rows
-    ])
-
-    base_df = base_df.reset_index(drop=True)
-    base_df["hour"] = base_df.index % 24
-    base_df["hour_sin"] = np.sin(2 * np.pi * base_df["hour"] / 24.0)
-    base_df["hour_cos"] = np.cos(2 * np.pi * base_df["hour"] / 24.0)
-
-    patients = base_df["patients"]
-    base_df["patients_lag_1"] = patients.shift(1)
-    base_df["patients_lag_2"] = patients.shift(2)
-    base_df["patients_lag_3"] = patients.shift(3)
-    base_df["patients_lag_6"] = patients.shift(6)
-    base_df["patients_lag_12"] = patients.shift(12)
-    base_df["patients_lag_24"] = patients.shift(24)
-
-    shifted = patients.shift(1)
-    base_df["patients_roll_mean_3"] = shifted.rolling(3, min_periods=1).mean()
-    base_df["patients_roll_std_3"] = shifted.rolling(3, min_periods=2).std()
-    base_df["patients_roll_mean_6"] = shifted.rolling(6, min_periods=1).mean()
-    base_df["patients_roll_std_6"] = shifted.rolling(6, min_periods=2).std()
-    base_df["patients_roll_mean_12"] = shifted.rolling(12, min_periods=1).mean()
-    base_df["patients_roll_std_12"] = shifted.rolling(12, min_periods=2).std()
-    base_df["patients_roll_mean_24"] = shifted.rolling(24, min_periods=1).mean()
-    base_df["patients_roll_std_24"] = shifted.rolling(24, min_periods=2).std()
-
-    base_df["patients_diff_1"] = patients.diff(1)
-    base_df["patients_diff_24"] = patients.diff(24)
-    base_df["trend_feature"] = (
-        np.arange(len(base_df), dtype=float) / float(len(base_df) - 1)
-        if len(base_df) > 1 else 0.0
-    )
-
-    for col in [c for c in base_df.columns if c.startswith("patients_roll_std_")]:
-        base_df[col] = base_df[col].fillna(0.0)
-
-    base_df = base_df.bfill().ffill().fillna(0.0)
-    sequence_df = base_df[FEATURE_COLUMNS].tail(SEQUENCE_LENGTH).copy()
-
-    if len(sequence_df) != SEQUENCE_LENGTH:
-        raise ValueError(
-            f"Could not build latest sequence. Need {SEQUENCE_LENGTH} rows, got {len(sequence_df)}."
-        )
-
-    return sequence_df.astype(float).values.tolist()
+# (duplicate removed)
 
 
 def serialize_message_row(row: MessageLog) -> dict:
@@ -441,56 +344,8 @@ def serialize_message_row(row: MessageLog) -> dict:
 
 
 def bootstrap_messages_from_csv_if_needed(db: Session):
-    if db.query(MessageLog).count() > 0 or not os.path.exists(LEGACY_MESSAGES_FILE):
-        return
-
-    try:
-        legacy_df = pd.read_csv(LEGACY_MESSAGES_FILE)
-    except Exception:
-        return
-
-    if legacy_df.empty:
-        return
-
-    for col in LEGACY_MESSAGE_COLS:
-        if col not in legacy_df.columns:
-            legacy_df[col] = ""
-
-    legacy_df = legacy_df[LEGACY_MESSAGE_COLS].copy()
-
-    rows_added = 0
-    for _, row in legacy_df.iterrows():
-        message_id = normalize_text(row.get("message_id"))
-        if not message_id:
-            continue
-
-        if db.query(MessageLog).filter(MessageLog.message_id == message_id).first():
-            continue
-
-        db.add(
-            MessageLog(
-                message_id=message_id,
-                timestamp=normalize_text(row.get("timestamp"), parse_datetime_now()),
-                sender_role=normalize_text(row.get("sender_role"), "admin"),
-                sender_name=normalize_text(row.get("sender_name"), "System"),
-                target_role=normalize_text(row.get("target_role"), "all"),
-                target_department=normalize_text(row.get("target_department"), "All Departments"),
-                priority=normalize_text(row.get("priority"), "normal"),
-                category=normalize_text(row.get("category"), "general"),
-                title=normalize_text(row.get("title"), "Untitled"),
-                message=normalize_text(row.get("message")),
-                status=normalize_text(row.get("status"), "sent"),
-                reply=normalize_text(row.get("reply")),
-                reply_by=normalize_text(row.get("reply_by")),
-                reply_timestamp=normalize_text(row.get("reply_timestamp")),
-                acknowledged=normalize_text(row.get("acknowledged"), "no"),
-                archived=normalize_bool(row.get("archived"), False),
-            )
-        )
-        rows_added += 1
-
-    if rows_added:
-        db.commit()
+    # DB-first runtime: do not bootstrap from CSV.
+    return
 
 
 @app.middleware("http")
@@ -501,17 +356,17 @@ async def log_requests(request, call_next):
 
 
 @system_router.get("/")
-def home():
+def home(_token: dict = Depends(require_staff_or_admin)):
     return {"message": "Hospital AI API is running"}
 
 
 @system_router.get("/health")
-def health():
+def health(_token: dict = Depends(require_staff_or_admin)):
     return {"status": "ok"}
 
 
 @system_router.get("/health/db")
-def health_db():
+def health_db(_token: dict = Depends(require_staff_or_admin)):
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
@@ -521,15 +376,18 @@ def health_db():
 
 
 @system_router.get("/status")
-def system_status():
+def system_status(_token: dict = Depends(require_staff_or_admin)):
     diag = artifact_diagnostics()
     manifest = load_manifest()
     weights = None
 
     if not diag.get("missing"):
         try:
-            lstm_w, arimax_w = _load_hybrid_weights()
-            weights = {"lstm": float(lstm_w), "arimax": float(arimax_w)}
+            assets = _get_assets_or_503()
+            weights = {
+                "lstm": float(getattr(assets, "lstm_weight", None)),
+                "arimax": float(getattr(assets, "arimax_weight", None)),
+            }
         except Exception:
             weights = None
 
@@ -546,7 +404,7 @@ def system_status():
 
 
 @system_router.get("/feature_config")
-def get_feature_config():
+def get_feature_config(_token: dict = Depends(require_staff_or_admin)):
     return {
         "feature_count": FEATURE_COUNT,
         "sequence_length": SEQUENCE_LENGTH,
@@ -556,12 +414,12 @@ def get_feature_config():
 
 
 @system_router.get("/artifacts/manifest")
-def get_artifacts_manifest():
+def get_artifacts_manifest(_token: dict = Depends(require_admin)):
     return load_manifest()
 
 
 @messages_router.get("/templates")
-def get_message_templates():
+def get_message_templates(_token: dict = Depends(require_staff_or_admin)):
     return {
         "admin_templates": ADMIN_MESSAGE_TEMPLATES,
         "staff_quick_replies": STAFF_QUICK_REPLIES,
@@ -576,6 +434,7 @@ def get_messages(
     unread_only: bool = Query(default=False),
     include_archived: bool = Query(default=False),
     sender_name: Optional[str] = Query(default=None),
+    _token: dict = Depends(require_staff_or_admin),
     db: Session = Depends(get_db),
 ):
     bootstrap_messages_from_csv_if_needed(db)
@@ -617,7 +476,11 @@ def get_messages(
 
 
 @messages_router.post("/send")
-def send_message(payload: SendMessageRequest, db: Session = Depends(get_db)):
+def send_message(
+    payload: SendMessageRequest,
+    _token: dict = Depends(require_staff_or_admin),
+    db: Session = Depends(get_db),
+):
     bootstrap_messages_from_csv_if_needed(db)
 
     row = MessageLog(
@@ -651,7 +514,11 @@ def send_message(payload: SendMessageRequest, db: Session = Depends(get_db)):
 
 
 @messages_router.post("/reply")
-def reply_to_message(payload: ReplyMessageRequest, db: Session = Depends(get_db)):
+def reply_to_message(
+    payload: ReplyMessageRequest,
+    _token: dict = Depends(require_staff_or_admin),
+    db: Session = Depends(get_db),
+):
     bootstrap_messages_from_csv_if_needed(db)
 
     row = db.query(MessageLog).filter(
@@ -680,7 +547,11 @@ def reply_to_message(payload: ReplyMessageRequest, db: Session = Depends(get_db)
 
 
 @messages_router.post("/ack")
-def acknowledge_message(payload: MessageActionRequest, db: Session = Depends(get_db)):
+def acknowledge_message(
+    payload: MessageActionRequest,
+    _token: dict = Depends(require_staff_or_admin),
+    db: Session = Depends(get_db),
+):
     bootstrap_messages_from_csv_if_needed(db)
 
     row = db.query(MessageLog).filter(
@@ -701,7 +572,11 @@ def acknowledge_message(payload: MessageActionRequest, db: Session = Depends(get
 
 
 @messages_router.post("/archive")
-def archive_message(payload: MessageActionRequest, db: Session = Depends(get_db)):
+def archive_message(
+    payload: MessageActionRequest,
+    _token: dict = Depends(require_staff_or_admin),
+    db: Session = Depends(get_db),
+):
     bootstrap_messages_from_csv_if_needed(db)
 
     row = db.query(MessageLog).filter(
@@ -728,16 +603,29 @@ def login_user(payload: LoginRequest, db: Session = Depends(get_db)):
     if user is None or not verify_password(password, normalize_text(user.password)):
         raise HTTPException(status_code=401, detail="Invalid username or password.")
 
+    token = create_token(
+        {
+            "sub": normalize_text(user.username),
+            "username": normalize_text(user.username),
+            "role": normalize_text(user.role),
+            "department": normalize_text(user.department),
+            "name": normalize_text(user.name),
+        }
+    )
     return {
-        "username": normalize_text(user.username),
-        "name": normalize_text(user.name),
-        "role": normalize_text(user.role),
-        "department": normalize_text(user.department),
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "username": normalize_text(user.username),
+            "name": normalize_text(user.name),
+            "role": normalize_text(user.role),
+            "department": normalize_text(user.department),
+        },
     }
 
 
 @auth_router.get("/users")
-def get_users(db: Session = Depends(get_db)):
+def get_users(_token: dict = Depends(require_admin), db: Session = Depends(get_db)):
     users = db.query(User).all()
     return {
         "users": [
@@ -753,7 +641,10 @@ def get_users(db: Session = Depends(get_db)):
 
 
 @patient_flow_router.get("/latest")
-def get_latest_patient_flow_sequence(db: Session = Depends(get_db)):
+def get_latest_patient_flow_sequence(
+    _token: dict = Depends(require_staff_or_admin),
+    db: Session = Depends(get_db),
+):
     rows = db.query(PatientFlow).order_by(PatientFlow.id.desc()).limit(SEQUENCE_LENGTH).all()
     if len(rows) < SEQUENCE_LENGTH:
         raise HTTPException(
@@ -770,12 +661,83 @@ def get_latest_patient_flow_sequence(db: Session = Depends(get_db)):
 
 
 @ml_router.get("/optimize_resources/{predicted_patients}")
-def optimize_resources_endpoint(predicted_patients: float):
-    return optimize_resources(predicted_patients)
+def optimize_resources_endpoint(
+    predicted_patients: float,
+    _token: dict = Depends(require_staff_or_admin),
+    db: Session = Depends(get_db),
+):
+    """Run optimization and persist the run for audit + approvals."""
+
+    result = optimize_resources(predicted_patients)
+    summary = result.get("summary", {}) if isinstance(result, dict) else {}
+
+    try:
+        row = OptimizationRun(
+            run_id=_new_run_id("OPT"),
+            timestamp=parse_datetime_now(),
+            predicted_patients=float(predicted_patients),
+            objective=float(summary.get("objective")) if summary.get("objective") is not None else None,
+            summary_json=json.dumps(summary, ensure_ascii=False),
+            allocations_json=json.dumps(result.get("department_allocations", []), ensure_ascii=False),
+            actions_json=json.dumps(result.get("actions", []), ensure_ascii=False),
+            recommendations_json=json.dumps(result.get("recommendations", []), ensure_ascii=False),
+        )
+        db.add(row)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logging.exception("Failed to persist optimization run: %s", e)
+
+    return result
+
+
+@ml_router.get("/optimization_runs")
+def list_optimization_runs(
+    limit: int = Query(default=20, ge=1, le=200),
+    _token: dict = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    rows = db.query(OptimizationRun).order_by(OptimizationRun.id.desc()).limit(limit).all()
+    payload = []
+    for r in rows:
+        payload.append(
+            {
+                "run_id": normalize_text(r.run_id),
+                "timestamp": normalize_text(r.timestamp),
+                "predicted_patients": float(r.predicted_patients),
+                "objective": float(r.objective) if r.objective is not None else None,
+                "summary": json.loads(r.summary_json) if r.summary_json else {},
+            }
+        )
+    return {"runs": payload}
+
+
+@ml_router.get("/optimization_runs/{run_id}")
+def get_optimization_run(
+    run_id: str,
+    _token: dict = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    row = db.query(OptimizationRun).filter(OptimizationRun.run_id == normalize_text(run_id)).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Optimization run not found")
+    return {
+        "run_id": normalize_text(row.run_id),
+        "timestamp": normalize_text(row.timestamp),
+        "predicted_patients": float(row.predicted_patients),
+        "objective": float(row.objective) if row.objective is not None else None,
+        "summary": json.loads(row.summary_json) if row.summary_json else {},
+        "department_allocations": json.loads(row.allocations_json) if row.allocations_json else [],
+        "actions": json.loads(row.actions_json) if row.actions_json else [],
+        "recommendations": json.loads(row.recommendations_json) if row.recommendations_json else [],
+    }
 
 
 @ml_router.post("/predict")
-def predict(payload: PredictRequest):
+def predict(
+    payload: PredictRequest,
+    _token: dict = Depends(require_staff_or_admin),
+):
     sequence_array = np.array(payload.sequence, dtype=float)
 
     if not validate_sequence_shape(sequence_array):
@@ -799,7 +761,10 @@ def predict(payload: PredictRequest):
 
 
 @ml_router.post("/simulate")
-def simulate(payload: SimulateRequest):
+def simulate(
+    payload: SimulateRequest,
+    _token: dict = Depends(require_staff_or_admin),
+):
     adjusted_patients = float(payload.predicted_patients) * (
         1.0 + float(payload.demand_increase_percent) / 100.0
     )
@@ -822,7 +787,10 @@ def simulate(payload: SimulateRequest):
 
 
 @ml_router.post("/explain")
-def explain(payload: ExplainRequest):
+def explain(
+    payload: ExplainRequest,
+    _token: dict = Depends(require_staff_or_admin),
+):
     sequence_array = np.array(payload.sequence, dtype=float)
 
     if not validate_sequence_shape(sequence_array):
@@ -838,7 +806,10 @@ def explain(payload: ExplainRequest):
 
 
 @ml_router.post("/evaluate")
-def evaluate(payload: EvaluateRequest):
+def evaluate(
+    payload: EvaluateRequest,
+    _token: dict = Depends(require_admin),
+):
     return compare_models(
         actual=payload.actual,
         lstm=payload.lstm,
@@ -848,19 +819,28 @@ def evaluate(payload: EvaluateRequest):
 
 
 @upload_router.post("/patient_flow")
-def upload_patient_flow(file: UploadFile = File(...)):
+def upload_patient_flow(
+    file: UploadFile = File(...),
+    _token: dict = Depends(require_admin),
+):
     ingest_patient_flow(file.file)
     return {"status": "patient flow uploaded"}
 
 
 @upload_router.post("/appointments")
-def upload_appointments(file: UploadFile = File(...)):
+def upload_appointments(
+    file: UploadFile = File(...),
+    _token: dict = Depends(require_admin),
+):
     ingest_appointments(file.file)
     return {"status": "appointments uploaded"}
 
 
 @upload_router.post("/or")
-def upload_or(file: UploadFile = File(...)):
+def upload_or(
+    file: UploadFile = File(...),
+    _token: dict = Depends(require_admin),
+):
     ingest_or(file.file)
     return {"status": "or bookings uploaded"}
 
@@ -868,14 +848,29 @@ def upload_or(file: UploadFile = File(...)):
 # Backwards-compatible aliases (keep existing dashboard client paths working)
 # - Old: GET /message_templates  -> New: GET /messages/templates
 @system_router.get("/message_templates", include_in_schema=False)
-def _legacy_message_templates():
-    return get_message_templates()
+def _legacy_message_templates(_token: dict = Depends(require_staff_or_admin)):
+    return {
+        "admin_templates": ADMIN_MESSAGE_TEMPLATES,
+        "staff_quick_replies": STAFF_QUICK_REPLIES,
+    }
 
 
 # - Old: GET /users -> New: GET /auth/users
 @system_router.get("/users", include_in_schema=False)
-def _legacy_users(db: Session = Depends(get_db)):
-    return get_users(db=db)
+def _legacy_users(_token: dict = Depends(require_admin), db: Session = Depends(get_db)):
+    # Mirror /auth/users payload.
+    users = db.query(User).all()
+    return {
+        "users": [
+            {
+                "username": normalize_text(u.username),
+                "name": normalize_text(u.name),
+                "role": normalize_text(u.role),
+                "department": normalize_text(u.department),
+            }
+            for u in users
+        ]
+    }
 
 
 app.include_router(system_router)

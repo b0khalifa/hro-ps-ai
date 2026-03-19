@@ -2,6 +2,8 @@ from datetime import datetime
 
 import streamlit as st
 
+import os
+
 from api_client import api_base_url, login_user_api
 from approval_sections import show_admin_approval_panel
 from audit_sections import show_audit_summary, show_audit_table, show_execution_trace
@@ -38,6 +40,9 @@ init_db()
 if "user" not in st.session_state:
     st.session_state.user = None
 
+if "token" not in st.session_state:
+    st.session_state.token = ""
+
 
 def login_view():
     st.title("🏥 HRO — AI Hospital System")
@@ -50,8 +55,11 @@ def login_view():
 
     if st.button("Login"):
         user = login_user_api(username.strip(), password.strip()) if username.strip() and password.strip() else None
-        if user:
-            st.session_state.user = user
+        if user and isinstance(user, dict) and user.get("access_token") and user.get("user"):
+            st.session_state.user = user["user"]
+            st.session_state.token = user["access_token"]
+            # Pass token to the API client via env so existing helper functions work.
+            os.environ["API_TOKEN"] = st.session_state.token
             st.success("Login successful")
             st.rerun()
         else:
@@ -146,6 +154,9 @@ def show_sidebar_context(user):
 
     if st.sidebar.button("Logout"):
         st.session_state.user = None
+        st.session_state.token = ""
+        if "API_TOKEN" in os.environ:
+            os.environ.pop("API_TOKEN", None)
         st.rerun()
 
 

@@ -120,3 +120,29 @@ class AuditEvent(Base):
     target = Column(String, nullable=True)
     status = Column(String, nullable=False)
     details = Column(Text, nullable=True)
+
+
+class OptimizationRun(Base):
+    """Persisted optimization results.
+
+    This is a DB-first record of the optimizer output so we can:
+    - support audits (what plan was generated for what forecast)
+    - drive approvals from optimizer outputs
+    - track outcomes and model/optimizer drift over time
+
+    Note: JSON is stored as Text for portability; in production prefer JSONB.
+    """
+
+    __tablename__ = "optimization_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(String, unique=True, nullable=False, index=True)
+    timestamp = Column(String, nullable=False)
+
+    predicted_patients = Column(Float, nullable=False)
+    objective = Column(Float, nullable=True)
+
+    summary_json = Column(Text, nullable=True)
+    allocations_json = Column(Text, nullable=True)
+    actions_json = Column(Text, nullable=True)
+    recommendations_json = Column(Text, nullable=True)

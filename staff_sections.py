@@ -1,4 +1,3 @@
-import os
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -24,82 +23,18 @@ def _safe_int(value, default=0):
 
 
 def _bootstrap_shifts_from_csv_if_needed(db: Session):
-    if db.query(StaffShift).count() > 0:
-        return
-    path = "shifts.csv"
-    if not os.path.exists(path):
-        return
-    df = pd.read_csv(path)
-    if df.empty:
-        return
-    required_cols = ["staff_username", "name", "role", "department", "shift_date", "shift_type", "status"]
-    for col in required_cols:
-        if col not in df.columns:
-            df[col] = ""
-    for _, row in df.iterrows():
-        db.add(StaffShift(
-            staff_username=_normalize(row.get("staff_username")),
-            name=_normalize(row.get("name")),
-            role=_normalize(row.get("role")),
-            department=_normalize(row.get("department")),
-            shift_date=_normalize(row.get("shift_date")),
-            shift_type=_normalize(row.get("shift_type")),
-            status=_normalize(row.get("status")),
-        ))
-    db.commit()
+    # DB-first runtime: do not bootstrap from CSV.
+    return
 
 
 def _bootstrap_or_from_csv_if_needed(db: Session):
-    if db.query(ORBooking).count() > 0:
-        return
-    path = "or_bookings.csv"
-    if not os.path.exists(path):
-        return
-    df = pd.read_csv(path)
-    if df.empty:
-        return
-    required_cols = ["booking_id", "room", "doctor", "department", "date", "time_slot", "procedure", "status"]
-    for col in required_cols:
-        if col not in df.columns:
-            df[col] = ""
-    for _, row in df.iterrows():
-        db.add(ORBooking(
-            booking_id=_normalize(row.get("booking_id")),
-            room=_normalize(row.get("room")),
-            doctor=_normalize(row.get("doctor")),
-            department=_normalize(row.get("department")),
-            date=_normalize(row.get("date")),
-            time_slot=_normalize(row.get("time_slot")),
-            procedure=_normalize(row.get("procedure")),
-            status=_normalize(row.get("status")),
-        ))
-    db.commit()
+    # DB-first runtime: do not bootstrap from CSV.
+    return
 
 
 def _bootstrap_appointments_from_csv_if_needed(db: Session):
-    if db.query(Appointment).count() > 0:
-        return
-    path = "appointments.csv"
-    if not os.path.exists(path):
-        return
-    df = pd.read_csv(path)
-    if df.empty:
-        return
-    required_cols = ["appointment_id", "department", "doctor", "date", "time_slot", "patient_count", "status"]
-    for col in required_cols:
-        if col not in df.columns:
-            df[col] = ""
-    for _, row in df.iterrows():
-        db.add(Appointment(
-            appointment_id=_normalize(row.get("appointment_id")),
-            department=_normalize(row.get("department")),
-            doctor=_normalize(row.get("doctor")),
-            date=_normalize(row.get("date")),
-            time_slot=_normalize(row.get("time_slot")),
-            patient_count=_safe_int(row.get("patient_count"), 0),
-            status=_normalize(row.get("status")),
-        ))
-    db.commit()
+    # DB-first runtime: do not bootstrap from CSV.
+    return
 
 
 def _load_shifts_df() -> pd.DataFrame:
@@ -241,4 +176,5 @@ def show_admin_appointments_overview():
     fig = px.pie(summary, names="department", values="patient_count", title="Appointments Load by Department")
     fig.update_layout(height=400)
     st.plotly_chart(fig, use_container_width=True)
+
 

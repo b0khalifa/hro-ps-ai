@@ -10,7 +10,7 @@ from database import SessionLocal
 from models import Appointment, AuditEvent, ORBooking, RecommendationRecord, StaffShift
 from ui_components import empty_state, section_header
 
-LEGACY_RECOMMENDATION_FILE = "recommendation_log.csv"
+LEGACY_RECOMMENDATION_FILE = "recommendation_log.csv"  # import-only (not runtime)
 REQUIRED_LOG_COLS = [
     "recommendation_id",
     "timestamp",
@@ -65,38 +65,8 @@ def _record_audit(db: Session, action: str, actor: str, target: str, status: str
 
 
 def _bootstrap_recommendations_from_csv_if_needed(db: Session):
-    if db.query(RecommendationRecord).count() > 0:
-        return
-    if not os.path.exists(LEGACY_RECOMMENDATION_FILE):
-        return
-    try:
-        df = pd.read_csv(LEGACY_RECOMMENDATION_FILE)
-    except Exception:
-        return
-    if df.empty:
-        return
-
-    for col in REQUIRED_LOG_COLS:
-        if col not in df.columns:
-            df[col] = ""
-
-    df = df[REQUIRED_LOG_COLS].copy()
-
-    for _, row in df.iterrows():
-        db.add(
-            RecommendationRecord(
-                recommendation_id=_normalize(row.get("recommendation_id"), _new_recommendation_id()),
-                timestamp=_normalize(row.get("timestamp"), _now()),
-                rec_type=_normalize(row.get("type"), "general"),
-                message=_normalize(row.get("message")),
-                status=_normalize(row.get("status"), "pending"),
-                approved_by=_normalize(row.get("approved_by")),
-                execution_status=_normalize(row.get("execution_status")),
-                execution_note=_normalize(row.get("execution_note")),
-                affected_entities=_normalize(row.get("affected_files")),
-            )
-        )
-    db.commit()
+    # DB-first runtime: do not bootstrap from CSV.
+    return
 
 
 def _recommendation_record_to_dict(row: RecommendationRecord) -> dict:

@@ -1,4 +1,3 @@
-import os
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -20,21 +19,12 @@ from ui_components import alert_box, empty_state, kpi_card, modern_table, sectio
 
 
 def _load_runtime_dataframe():
-    for path in ["engineered_data.csv", "clean_data.csv"]:
-        if os.path.exists(path):
-            df = pd.read_csv(path)
-            if "patients" in df.columns:
-                return df
+    # DB-first runtime: dashboard should not read CSV files.
     return pd.DataFrame()
 
 
 def _build_engineered_frame_from_base(df: pd.DataFrame, feature_columns: list[str]) -> pd.DataFrame:
-    """Build the engineered feature columns from a base clean_data-like dataframe.
-
-    This keeps the dashboard usable even when:
-    - Postgres isn't seeded yet (API /patient_flow/latest fails)
-    - engineered_data.csv is not generated
-    """
+    """Legacy helper (no longer used in DB-first runtime)."""
 
     if df.empty:
         return pd.DataFrame()
@@ -104,40 +94,11 @@ def _load_runtime_sequence(df: pd.DataFrame):
 
         # API reachable but returned unexpected payload.
         st.warning(
-            f"Latest sequence received from API but shape was {arr.shape} (expected {expected_shape}). "
-            "Falling back to local CSV sequence."
+            f"Latest sequence received from API but shape was {arr.shape} (expected {expected_shape})."
         )
 
-    if df.empty or not feature_columns:
-        return None, feature_columns, sequence_length
-
-    missing = [c for c in feature_columns if c not in df.columns]
-    if missing:
-        engineered_df = _build_engineered_frame_from_base(df, feature_columns)
-        if engineered_df.empty:
-            return None, feature_columns, sequence_length
-
-        if len(engineered_df) < sequence_length:
-            return None, feature_columns, sequence_length
-
-        return (
-            engineered_df[feature_columns]
-            .tail(sequence_length)
-            .values.astype(float),
-            feature_columns,
-            sequence_length,
-        )
-
-    df = df.copy()
-    for col in feature_columns:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    df = df.dropna(subset=feature_columns).reset_index(drop=True)
-
-    if len(df) < sequence_length:
-        return None, feature_columns, sequence_length
-
-    return df[feature_columns].tail(sequence_length).values.astype(float), feature_columns, sequence_length
+    # DB-first: do not fallback to CSV.
+    return None, feature_columns, sequence_length
 
 
 def get_live_context():
@@ -149,7 +110,8 @@ def get_live_context():
             "ready": False,
             "reason": (
                 "Latest model input sequence could not be loaded. "
-                "Check API /patient_flow/latest (needs seeded patient_flow rows) or ensure engineered_data.csv exists."
+                "Seed Postgres patient_flow data (run seed_from_csv.py or use POST /upload/patient_flow), "
+                "then try again."
             ),
             "df": df,
         }
